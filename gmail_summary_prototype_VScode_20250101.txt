@@ -1,0 +1,450 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart'; // 클립보드 기능을 위해 추가
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sign_in_as_googleapis_auth.dart';
+import 'package:googleapis/gmail/v1.dart' as gmail;
+import 'package:google_generative_ai/google_generative_ai.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
+
+void main() => runApp(
+  const MaterialApp(
+    home: MainScreen(), 
+    debugShowCheckedModeBanner: false,
+    ),
+);
+
+class MainScreen extends StatefulWidget {
+  const MainScreen({super.key});
+  @override
+  _MainScreenState createState() => _MainScreenState();
+}
+
+class _MainScreenState extends State<MainScreen> {
+  final GoogleSignIn _googleSignIn = GoogleSignIn(
+    clientId:
+        '326473513366-94a566ruievsb39ptvjnu6ohfrlfljku.apps.googleusercontent.com',
+    scopes: [gmail.GmailApi.gmailReadonlyScope],
+  );
+  GoogleSignInAccount? _currentUser;
+  final String _geminiApiKey = 'AIzaSyA0nCy1M5Ifbr1toj1sN3td91ssLMl7FPA';
+
+  bool _isLoading = false;
+  List<Map<String, String>> _allEmails = [];
+  int? _selectedIndex;
+  String _aiResult = "";
+
+  // 필터 및 프롬프트 변수
+  List<String> _whiteList = [];
+  Set<String> _selectedSenders = {};
+  DateTime _startDate = DateTime.now().subtract(const Duration(days: 1));
+  DateTime _endDate = DateTime.now();
+  final TextEditingController _senderController = TextEditingController();
+
+  int _selectedPromptIndex = 0;
+  final List<TextEditingController> _promptControllers = [
+    TextEditingController(text: "학교 이메일입니다. 핵심 내용을 한국어로 요약해 주세요."),
+    TextEditingController(text: "이메일 전문을 한국어로 번역해 주세요."),
+    TextEditingController(text: "중요한 일정과 준비물 위주로 정리해 주세요."),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _initApp();
+  }
+
+  Future<void> _initApp() async {
+    await _loadSettings();
+    _googleSignIn.onCurrentUserChanged.listen((account) {
+      setState(() => _currentUser = account);
+      if (account != null && _selectedSenders.isNotEmpty) _fetchEmails();
+    });
+    _googleSignIn.signInSilently();
+  }
+
+  Future<void> _loadSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _whiteList = prefs.getStringList('whiteList') ?? [];
+      _selectedSenders = (prefs.getStringList('selectedSenders') ?? []).toSet();
+      _selectedPromptIndex = prefs.getInt('selectedPromptIndex') ?? 0;
+      for (int i = 0; i < 3; i++) {
+        _promptControllers[i].text =
+            prefs.getString('prompt_$i') ?? _promptControllers[i].text;
+      }
+    });
+  }
+
+  Future<void> _saveSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList('whiteList', _whiteList);
+    await prefs.setStringList('selectedSenders', _selectedSenders.toList());
+    await prefs.setInt('selectedPromptIndex', _selectedPromptIndex);
+    for (int i = 0; i < 3; i++) {
+      await prefs.setString('prompt_$i', _promptControllers[i].text);
+    }
+  }
+
+  String _formatDate(DateTime dt) =>
+      "${dt.year}/${dt.month.toString().padLeft(2, '0')}/${dt.day.toString().padLeft(2, '0')}";
+
+  Future<void> _fetchEmails() async {
+    if (_currentUser == null || _selectedSenders.isEmpty) return;
+    setState(() => _isLoading = true);
+    try {
+      var httpClient = (await _googleSignIn.authenticatedClient())!;
+      var gmailApi = gmail.GmailApi(httpClient);
+      String query =
+          "after:${_formatDate(_startDate)} before:${_formatDate(_endDate.add(const Duration(days: 1)))} (${_selectedSenders.map((s) => "from:$s").join(' OR ')})";
+      var results = await gmailApi.users.messages.list(
+        'me',
+        q: query,
+        maxResults: 15,
+      );
+
+      List<Map<String, String>> fetched = [];
+      if (results.messages != null) {
+        for (var msg in results.messages!) {
+          var detail = await gmailApi.users.messages.get('me', msg.id!);
+          String sub = "", from = "";
+          DateTime emailDate = DateTime.fromMillisecondsSinceEpoch(
+            int.parse(detail.internalDate!),
+          ).toLocal();
+          detail.payload?.headers?.forEach((h) {
+            if (h.name?.toLowerCase() == 'subject') sub = h.value ?? "";
+            if (h.name?.toLowerCase() == 'from') from = h.value ?? "";
+          });
+          fetched.add({
+            'subject': sub,
+            'from': from,
+            'body': _extractBody(detail.payload!),
+            'date':
+                "${emailDate.month}/${emailDate.day} ${emailDate.hour}:${emailDate.minute.toString().padLeft(2, '0')}",
+          });
+        }
+      }
+      setState(() {
+        _allEmails = fetched;
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  String _extractBody(gmail.MessagePart part) {
+    String text = "";
+    if (part.body?.data != null)
+      text = utf8
+          .decode(base64Url.decode(part.body!.data!))
+          .replaceAll(RegExp(r'<[^>]*>|&nbsp;'), ' ');
+    if (part.parts != null) for (var p in part.parts!) text += _extractBody(p);
+    return text.replaceAll(RegExp(r'\s+'), ' ');
+  }
+
+  Future<void> _runAI() async {
+    if (_selectedIndex == null) return;
+    setState(() {
+      _isLoading = true;
+      _aiResult = "AI 분석 중...";
+    });
+    try {
+      final model = GenerativeModel(
+        model: 'gemini-2.0-flash',
+        apiKey: _geminiApiKey,
+      );
+      final email = _allEmails[_selectedIndex!];
+      final prompt =
+          "${_promptControllers[_selectedPromptIndex].text}\n\n제목: ${email['subject']}\n본문: ${email['body']}";
+      final response = await model.generateContent([Content.text(prompt)]);
+      setState(() {
+        _aiResult = response.text ?? "결과 없음";
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _aiResult = "에러: $e";
+        _isLoading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('AI 메일 비서'), centerTitle: true),
+      drawer: _buildDrawer(),
+      body: _currentUser == null
+          ? Center(
+              child: ElevatedButton(
+                onPressed: () => _googleSignIn.signIn(),
+                child: const Text("Google 로그인"),
+              ),
+            )
+          : Column(
+              children: [
+                if (_isLoading) const LinearProgressIndicator(),
+                Expanded(
+                  child: ListView.separated(
+                    itemCount: _allEmails.length,
+                    separatorBuilder: (context, index) =>
+                        const Divider(height: 1),
+                    itemBuilder: (context, index) {
+                      final mail = _allEmails[index];
+                      return ListTile(
+                        title: Text(
+                          mail['subject']!,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Text(
+                          mail['from']!,
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                        trailing: Text(
+                          mail['date']!,
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: Colors.grey,
+                          ),
+                        ),
+                        onTap: () {
+                          setState(() {
+                            _selectedIndex = index;
+                            _aiResult = "";
+                          });
+                          _showSummarySheet(context);
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+
+  Widget _buildDrawer() {
+    return Drawer(
+      child: Column(
+        children: [
+          const DrawerHeader(
+            decoration: BoxDecoration(color: Colors.blueAccent),
+            child: Center(
+              child: Text(
+                "설정 및 프롬프트",
+                style: TextStyle(color: Colors.white, fontSize: 18),
+              ),
+            ),
+          ),
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.all(12),
+              children: [
+                const Text(
+                  "1. 필터 설정",
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.calendar_today, size: 18),
+                  title: Text(
+                    "${_formatDate(_startDate)} ~ ${_formatDate(_endDate)}",
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  onTap: () async {
+                    final picked = await showDateRangePicker(
+                      context: context,
+                      firstDate: DateTime(2020),
+                      lastDate: DateTime.now(),
+                    );
+                    if (picked != null) {
+                      setState(() {
+                        _startDate = picked.start;
+                        _endDate = picked.end;
+                      });
+                      _fetchEmails();
+                    }
+                  },
+                ),
+                TextField(
+                  controller: _senderController,
+                  keyboardType: TextInputType.emailAddress,
+                  decoration: InputDecoration(
+                    hintText: "발신자 추가",
+                    isDense: true,
+                    suffixIcon: IconButton(
+                      icon: const Icon(Icons.add),
+                      onPressed: () {
+                        if (_senderController.text.contains('@')) {
+                          setState(
+                            () => _whiteList.add(_senderController.text.trim()),
+                          );
+                          _senderController.clear();
+                          _saveSettings();
+                        }
+                      },
+                    ),
+                  ),
+                ),
+                ..._whiteList.map(
+                  (s) => CheckboxListTile(
+                    dense: true,
+                    title: Text(s, style: const TextStyle(fontSize: 11)),
+                    value: _selectedSenders.contains(s),
+                    onChanged: (val) {
+                      setState(
+                        () => val!
+                            ? _selectedSenders.add(s)
+                            : _selectedSenders.remove(s),
+                      );
+                      _saveSettings();
+                      _fetchEmails();
+                    },
+                    secondary: IconButton(
+                      icon: const Icon(Icons.delete, size: 18),
+                      onPressed: () {
+                        setState(() {
+                          _whiteList.remove(s);
+                          _selectedSenders.remove(s);
+                        });
+                        _saveSettings();
+                        _fetchEmails();
+                      },
+                    ),
+                  ),
+                ),
+                const Divider(),
+                const Text(
+                  "2. AI 프롬프트",
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                for (int i = 0; i < 3; i++) ...[
+                  Row(
+                    children: [
+                      Radio<int>(
+                        value: i,
+                        groupValue: _selectedPromptIndex,
+                        onChanged: (val) {
+                          setState(() => _selectedPromptIndex = val!);
+                          _saveSettings();
+                        },
+                      ),
+                      Text(
+                        "프리셋 ${i + 1}",
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  TextField(
+                    controller: _promptControllers[i],
+                    maxLines: 2,
+                    style: const TextStyle(fontSize: 12),
+                    decoration: InputDecoration(
+                      border: const OutlineInputBorder(),
+                      fillColor: _selectedPromptIndex == i
+                          ? Colors.yellow[50]
+                          : Colors.white,
+                      filled: true,
+                    ),
+                    onChanged: (v) => _saveSettings(),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showSummarySheet(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            return Container(
+              padding: const EdgeInsets.all(20),
+              height: MediaQuery.of(context).size.height * 0.75,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(
+                        child: Text(
+                          _allEmails[_selectedIndex!]['subject']!,
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (_aiResult.isNotEmpty)
+                        IconButton(
+                          icon: const Icon(Icons.copy_all, color: Colors.blue),
+                          onPressed: () {
+                            Clipboard.setData(ClipboardData(text: _aiResult));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text("결과가 클립보드에 복사되었습니다."),
+                                duration: Duration(seconds: 1),
+                              ),
+                            );
+                          },
+                        ),
+                    ],
+                  ),
+                  const Divider(),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      // --- 텍스트 블록 선택 기능 추가 ---
+                      child: SelectableText(
+                        _aiResult.isEmpty ? "선택된 프리셋으로 AI를 실행합니다." : _aiResult,
+                        style: const TextStyle(fontSize: 14, height: 1.5),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 15),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () async {
+                        setSheetState(() => _aiResult = "AI 분석 중...");
+                        await _runAI();
+                        setSheetState(() {});
+                      },
+                      icon: const Icon(Icons.bolt),
+                      label: const Text("AI 실행"),
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 15),
+                        backgroundColor: Colors.amber[100],
+                        foregroundColor: Colors.black,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+}

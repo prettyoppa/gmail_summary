@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!--
+    If you are serving your web app in a path other than the root, change the
+    href value below to reflect the base path you are serving from.
+
+    The path provided below has to start and end with a slash "/" in order for
+    it to work correctly.
+
+    For more details:
+    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+
+    This is a placeholder for base href that will be replaced by the value of
+    the `--base-href` argument provided to `flutter build`.
+  -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="Catchy AI Email Analyzer">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="Catchy">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>Catchy</title>
+  
+  <link rel="manifest" href="manifest.json">
+
+  <script>
+    var userAgent = navigator.userAgent.toLowerCase();
+    var isKakaoTalk = userAgent.indexOf('kakaotalk') !== -1;
+
+    if (isKakaoTalk) {
+      if (userAgent.indexOf('android') !== -1) {
+        // 안드로이드는 크롬으로 강제 실행
+        location.href = 'intent://' + location.host + location.pathname + location.search + '#Intent;scheme=http;package=com.android.chrome;end';
+      } else if (userAgent.indexOf('iphone') !== -1 || userAgent.indexOf('ipad') !== -1) {
+        // iOS(아이폰)는 카카오톡 정책상 강제 실행이 어려우므로 
+        // 주소창에 kpw:// 를 붙여서 외부 브라우저 호출을 시도하거나 
+        // 사용자에게 안내 팝업을 띄우는 것이 일반적입니다.
+        // 우선은 가장 범용적인 우회 주소 방식을 시도합니다.
+        location.href = 'kakaotalk://web/openExternalApp?url=' + encodeURIComponent(location.href);
+      }
+    }
+    window.addEventListener('wheel', function(e) {
+      if (e.ctrlKey) {
+        // 이벤트가 플러터 엔진으로 넘어가서 막히기 전에 
+        // 전파를 중단시키지 않고 브라우저가 기본 동작을 수행하도록 둡니다.
+        e.stopImmediatePropagation();
+      }
+    }, { capture: true, passive: false });
+  </script>
+</head>
+<body>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

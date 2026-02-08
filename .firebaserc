@@ -1,0 +1,10 @@
+{
+  "projects": {
+    "default": "ireadschool-dev",
+    "main": "ireadschool-800f8",
+    "dev": "ireadschool-dev",
+    "qas": "ireadschool-qas"
+  },
+  "targets": {},
+  "etags": {}
+}
