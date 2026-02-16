@@ -4,6 +4,7 @@ import 'package:country_picker/country_picker.dart';
 import '../models/user_model.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:gmail_summary/screens/admin_dashboard_screen.dart';
+import 'mail_integration_section.dart';
 
 class ProfileDrawer extends StatefulWidget {
   final UserModel user;
@@ -399,7 +400,7 @@ class _ProfileDrawerState extends State<ProfileDrawer> {
                   child: const Text("설정 저장"),
                 ),
               ),
-
+              const MailIntegrationSection(),
               // ✨ 여기 아래에 관리자 메뉴를 추가합니다.
               if (widget.isAdmin) ...[
                 const SizedBox(height: 20), // 설정 저장 버튼과의 간격

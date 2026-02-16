@@ -99,7 +99,7 @@ class LandingPage extends StatelessWidget {
     final userAgent = html.window.navigator.userAgent.toLowerCase();
 
     const String apkUrl =
-        'https://firebasestorage.googleapis.com/v0/b/ireadschool-800f8.firebasestorage.app/o/app-release.apk?alt=media&token=fbe7f6de-445e-4026-8435-8500eaf92b51';
+        'https://firebasestorage.googleapis.com/v0/b/ireadschool-800f8.firebasestorage.app/o/app-release.apk?alt=media&token=de994f10-d4b4-4b4f-a14c-ecc5028c1d25';
 
     if (userAgent.contains("android")) {
       return Column(

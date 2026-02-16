@@ -1,41 +1,41 @@
 {
   "project_info": {
-    "project_number": "474725837334",
-    "project_id": "ireadschool-800f8",
-    "storage_bucket": "ireadschool-800f8.firebasestorage.app"
+    "project_number": "877541084240",
+    "project_id": "ireadschool-dev",
+    "storage_bucket": "ireadschool-dev.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:474725837334:android:5b787d58acb4584d99e337",
+        "mobilesdk_app_id": "1:877541084240:android:d9355131757f28a4d59555",
         "android_client_info": {
-          "package_name": "com.ireadschool.ischool"
+          "package_name": "com.ireadschool.ischool.dev"
         }
       },
       "oauth_client": [
         {
-          "client_id": "474725837334-8k7dd3pad4qhkb7c60u559h12l3b2fu6.apps.googleusercontent.com",
+          "client_id": "877541084240-p9pac3a95mspng8lgnism3f4k6m59acl.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
-            "package_name": "com.ireadschool.ischool",
+            "package_name": "com.ireadschool.ischool.dev",
             "certificate_hash": "5e42003716b05f0d891cd0f2c55a39c686f4c717"
           }
         },
         {
-          "client_id": "474725837334-dr5ulbt7a59rjnv5kumon6he56n1fibu.apps.googleusercontent.com",
+          "client_id": "877541084240-7c8sqajvr2pk2f3uba2ejrdcr66ep46f.apps.googleusercontent.com",
           "client_type": 3
         }
       ],
       "api_key": [
         {
-          "current_key": "AIzaSyDanU6GvNiPXbVPoQfSAM0jZ0N1IfRw1fo"
+          "current_key": "AIzaSyAuUrHpo2xbTkFoq99n3Ov4a7AntITaO0Y"
         }
       ],
       "services": {
         "appinvite_service": {
           "other_platform_oauth_client": [
             {
-              "client_id": "474725837334-dr5ulbt7a59rjnv5kumon6he56n1fibu.apps.googleusercontent.com",
+              "client_id": "877541084240-7c8sqajvr2pk2f3uba2ejrdcr66ep46f.apps.googleusercontent.com",
               "client_type": 3
             }
           ]

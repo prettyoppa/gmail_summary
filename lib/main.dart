@@ -591,9 +591,13 @@ class _MainScreenState extends State<MainScreen> {
     bool forceRefresh = false,
   }) async {
     final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
+    if (user == null) {
+      print('DEBUG: [로그인 에러] 사용자가 로그인되어 있지 않음');
+      return;
+    }
 
     final mailId = email['id'];
+    print('DEBUG: [분석 시작] mailId: $mailId, forceRefresh: $forceRefresh');
     final docRef = FirebaseFirestore.instance
         .collection('users')
         .doc(user.uid)
@@ -604,6 +608,7 @@ class _MainScreenState extends State<MainScreen> {
     if (!forceRefresh) {
       final doc = await docRef.get();
       if (doc.exists) {
+        print('DEBUG: [캐시 발견] Firestore에서 기존 데이터를 불러옵니다.');
         final data = doc.data()!;
         setState(() {
           // Firestore에 'result'로 저장된 값이 Map인지 확인 후 처리
@@ -614,7 +619,7 @@ class _MainScreenState extends State<MainScreen> {
         return;
       }
     }
-
+    print('DEBUG: [서버 요청] 캐시가 없거나 강제 새로고침입니다. 서버로 요청을 보냅니다.');
     setState(() {
       // _summarizedContent[mailId] = "요약 중...";
       _summarizedContent.remove(mailId);
@@ -629,6 +634,7 @@ class _MainScreenState extends State<MainScreen> {
         : activePrompt;
 
     try {
+      print('DEBUG: [HTTP POST] URL: ${AppConstants.summaryServerUrl}');
       final response = await http
           .post(
             Uri.parse(AppConstants.summaryServerUrl),
@@ -646,11 +652,13 @@ Body: ${email['body']}
             }),
           )
           .timeout(const Duration(seconds: 20)); // 20초 안에 응답 없으면 에러로 간주
-
+      print('DEBUG: [서버 응답 받음] StatusCode: ${response.statusCode}');
       if (response.statusCode == 200) {
         try {
           final Map<String, dynamic> parsedJson = jsonDecode(response.body);
+          print('DEBUG: [응답 데이터] $parsedJson');
           if (parsedJson['status'] == 'error') {
+            print('DEBUG: [서버 비즈니스 에러] status가 error입니다. 가이드를 표시합니다.');
             _setErrorState(mailId);
             // 가이드 메시지이므로 이후 '정상 분석' 로직을 타지 않고 종료
             return;
@@ -696,11 +704,13 @@ Body: ${email['body']}
             'messageId': finalMessageId,
             'updatedAt': FieldValue.serverTimestamp(),
           }, SetOptions(merge: true));
+          print('DEBUG: [성공] 데이터를 화면에 표시하고 Firestore에 저장합니다.');
         } catch (e) {
           debugPrint("❌ JSON 파싱 에러: $e");
           _setErrorState(mailId); // 👈 헬퍼 함수로 통일
         }
       } else {
+        print('DEBUG: [서버 응답 오류] StatusCode가 200이 아닙니다.');
         _setErrorState(mailId); // 👈 서버 응답 오류 시에도 가이드 표시
       }
     } catch (e) {
