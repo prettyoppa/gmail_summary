@@ -4,21 +4,23 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
-import 'package:googleapis/gmail/v1.dart' as gmail;
 import 'package:http/http.dart' as http;
 import 'package:googleapis_auth/googleapis_auth.dart';
 import 'package:country_picker/country_picker.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:googleapis/calendar/v3.dart' as cal;
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'services/mail_cache_manager.dart';
 
 import 'dart:convert';
 import 'services/app_login.dart';
+import 'dart:async';
 
 import 'constants.dart';
 import 'firebase_options.dart';
 import 'widgets/filter_drawer.dart';
 import 'widgets/profile_drawer.dart';
-import 'widgets/manual_button.dart';
+// import 'widgets/manual_button.dart';
 import 'models/user_model.dart';
 import 'email_detail_screen.dart';
 import 'web_email_detail_view.dart';
@@ -28,6 +30,15 @@ import 'package:universal_html/html.dart' as html;
 import 'landing_page.dart';
 import 'video_splash.dart';
 import 'package:flutter/gestures.dart';
+import 'services/gmail_service.dart';
+import 'models/integrated_mail.dart';
+import 'services/naver_mail_service.dart';
+import 'services/daum_mail_service.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+// import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'manual_manager.dart';
+import 'widgets/ai_prompt_button.dart';
 
 // 🎯 [추가] 실행 시 환경을 결정하는 변수 (기본값은 dev)
 // 터미널에서 flutter run --dart-define=APP_FLAVOR=qas 로 실행하면 qas로 붙습니다.
@@ -41,11 +52,17 @@ void main() async {
     WidgetsFlutterBinding.ensureInitialized();
     GestureBinding.instance.resamplingEnabled = true;
 
-    // 🎯 복잡한 if-else 대신 딱 한 줄로 정리됩니다.
+    // Firebase 초기화
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
-  } catch (e) {}
+
+    // ✅ [추가] 로컬 캐시(Hive) 초기화
+    // 이 작업이 완료되어야 앱 전체에서 캐시 데이터를 읽고 쓸 수 있습니다.
+    await MailCacheManager.init();
+  } catch (e) {
+    debugPrint("초기화 에러: $e");
+  }
 
   runApp(MyApp());
 }
@@ -106,7 +123,8 @@ class MainScreen extends StatefulWidget {
   State<MainScreen> createState() => _MainScreenState();
 }
 
-class _MainScreenState extends State<MainScreen> {
+class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
+  Timer? _autoSyncTimer;
   GoogleSignInAccount? _googleUser;
   UserModel? _currentUserModel;
 
@@ -118,7 +136,10 @@ class _MainScreenState extends State<MainScreen> {
   String _galleryPrompt = "";
   int _selectedPromptType = 0; // 0: 사용자1, 1: 사용자2
   DateTimeRange? _selectedDateRange;
-  List<Map<String, dynamic>> _filteredEmails = [];
+  DateTime _lastPromptUpdateTime = DateTime.now(); // 프롬프트가 마지막으로 바뀐 시간
+
+  List<IntegratedMail> _filteredEmails = [];
+  List<IntegratedMail> _displayEmails = [];
   bool _isFilterEnabled = true; // 필터링 활성화 여부 상태 변수
 
   bool _isMobileDetailOpen = false;
@@ -128,10 +149,33 @@ class _MainScreenState extends State<MainScreen> {
   Map<String, dynamic>? _selectedEmail; // 현재 웹에서 선택된 메일을 저장
   Map<String, dynamic> _summarizedContent = {}; // 요약 텍스트 저장용
 
-  // dynamic _currentDetectedEvent; // List가 들어올 수 있도록 dynamic으로 변경
   Map<String, dynamic> _extractedEventData = {}; // value 타입을 dynamic으로 변경
   double _leftWidth = 350; // 기본 왼쪽 리스트 너비
   Set<String> _readIds = {};
+  late final GmailService _gmailService;
+  late final NaverMailService _naverService;
+  final FlutterSecureStorage _storage = const FlutterSecureStorage();
+  final GoogleSignIn _googleSignIn = AppLogin.googleSignIn;
+  final _daumService = DaumMailService();
+  final ScrollController _scrollController = ScrollController();
+
+  bool _hasNewMails = false; // 새 메일 알림 버튼 표시 여부
+  // bool _showScrollButtons = false; // 버튼 표시 상태
+  bool _showScrollHUD = false; // HUD 표시 여부
+  Timer? _hudTimer; // 2~3초 후 숨기기 위한 타이머
+  // List<IntegratedMail> _latestServerMails = []; // 서버에서 방금 가져온 메일 임시 보관
+  bool _isInitialized = false; // 앱이 최소 한 번은 데이터를 가져왔는지 여부
+  double _loadingProgress = 0.0; // 0.0 ~ 1.0 사이의 진척도
+  bool _isSelectionMode = false; // 현재 선택 모드인지 여부
+  Set<String> _selectedMailIds = {}; // 선택된 메일의 ID들 (중복 방지를 위해 Set 사용)
+  final FocusNode _searchFocusNode = FocusNode(); // 검색창 포커스 감지
+  bool _isSearchFocused = false; // 현재 검색창이 활성화되었는지 여부
+  // 초기값은 모든 메일사가 선택된 상태 (Set을 활용해 멀티 선택 구현)
+  Set<MailSource> _selectedSources = {
+    MailSource.gmail,
+    MailSource.naver,
+    MailSource.daum,
+  };
 
   Future<void> _preloadAdminConfig() async {
     try {
@@ -156,9 +200,42 @@ class _MainScreenState extends State<MainScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+
+    final now = DateTime.now();
+    _selectedDateRange = DateTimeRange(
+      start: DateTime(
+        now.year,
+        now.month,
+        now.day,
+      ).subtract(const Duration(days: 90)),
+      end: DateTime(now.year, now.month, now.day, 23, 59, 59),
+    );
+
+    _gmailService = GmailService(_googleSignIn);
+    _naverService = NaverMailService();
     _preloadAdminConfig();
 
-    // 🎯 AppLogin 서비스의 객체를 사용하도록 수정
+    Future.microtask(() async {
+      // (A) 먼저 모든 하이브 박스를 엽니다.
+      await MailCacheManager.init();
+      debugPrint("📦 모든 Hive 박스 준비 완료");
+
+      setState(() {
+        _isLoading = true;
+        _loadingProgress = 0.05; // 5% 지점 표시
+        _isInitialized = false;
+      });
+
+      _loadCachedDataOnly();
+      await _fetchEmails(isBackground: false);
+    });
+
+    _autoSyncTimer = Timer.periodic(const Duration(minutes: 3), (timer) {
+      debugPrint("⏰ [타이머] 정기 자동 동기화 시작...");
+      _fetchEmails(isBackground: false);
+    });
+
     AppLogin.googleSignIn.onCurrentUserChanged.listen((
       GoogleSignInAccount? account,
     ) {
@@ -170,6 +247,7 @@ class _MainScreenState extends State<MainScreen> {
         setState(() {
           _isAdmin = isMatched;
         });
+        // ✅ 로그인이 확인되면 다시 한번 데이터를 갱신할 수 있도록 구성
         _loadInitialData();
       }
     });
@@ -178,6 +256,56 @@ class _MainScreenState extends State<MainScreen> {
       AppLogin.googleSignIn.signInSilently();
     } catch (e) {
       debugPrint("Silent Sign-in Error: $e");
+    }
+    _scrollController.addListener(() {
+      // 스크롤 동작이 감지되면 실행
+      if (mounted) {
+        setState(() {
+          _showScrollHUD = true;
+        });
+
+        // 기존 타이머가 있다면 취소하고 새로 시작 (스크롤 중에는 계속 유지)
+        _hudTimer?.cancel();
+        _hudTimer = Timer(const Duration(seconds: 2), () {
+          if (mounted) {
+            setState(() {
+              _showScrollHUD = false;
+            });
+          }
+        });
+      }
+    });
+    _searchFocusNode.addListener(() {
+      setState(() {
+        _isSearchFocused = _searchFocusNode.hasFocus;
+      });
+    });
+  }
+
+  // ✅ [추가] 캐시 데이터 로드 헬퍼 함수
+  void _loadCachedDataOnly() {
+    if (Hive.isBoxOpen('mail_cache_box')) {
+      // 1. 먼저 캐시에 있는 거라도 보여줍니다.
+      _updateUI();
+
+      // 2. 웹 환경인데 캐시된 메일이 너무 적다면? 서버에서 새로 가져오도록 유도
+      if (kIsWeb) {
+        final cachedCount = MailCacheManager.getCachedMails().length;
+        if (cachedCount < 5) {
+          // 기준은 편하신 대로 조절 가능 (예: 5개 미만)
+          debugPrint("🌐 웹 환경: 캐시가 부족하여 서버 동기화를 실행합니다.");
+          _fetchEmails(isBackground: false);
+          return; // 아래 로그 출력을 건너뜁니다.
+        }
+      }
+
+      debugPrint("📂 로컬 캐시 로드 및 필터링 완료");
+    } else {
+      // 박스가 아직 안 열렸다면 0.2초 뒤에 다시 시도
+      Future.delayed(
+        const Duration(milliseconds: 200),
+        () => _loadCachedDataOnly(),
+      );
     }
   }
 
@@ -188,6 +316,27 @@ class _MainScreenState extends State<MainScreen> {
       _currentUserModel = null;
       _filteredEmails = [];
     });
+  }
+
+  @override
+  void dispose() {
+    // ✅ [추가] 감지기 해제
+    WidgetsBinding.instance.removeObserver(this);
+    // ✅ [추가] 타이머 해제
+    _autoSyncTimer?.cancel();
+    _searchController.dispose(); // 기존 컨트롤러가 있다면 함께 정리
+    _searchFocusNode.dispose();
+    super.dispose();
+  }
+
+  // ✅ [추가] 다른 앱을 쓰다가 우리 앱으로 돌아왔을 때 실행되는 로직
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 앱이 'Resumed'(다시 활성화) 상태가 되었을 때
+    if (state == AppLifecycleState.resumed) {
+      debugPrint("🔙 [복귀] 앱 활성화: 최신 메일 체크 (백그라운드 모드)");
+      _fetchEmails(isBackground: false);
+    }
   }
 
   Future<void> _loadInitialData() async {
@@ -250,11 +399,12 @@ class _MainScreenState extends State<MainScreen> {
           }
 
           // 4. [중요] 사용자 정보 불러오기
-          // 이제 AppLogin에서 저장을 마쳤으므로, 여기서는 '불러오기'만 합니다.
           _currentUserModel = UserModel.fromMap(data);
           _customPrompt = data['customPrompt'] ?? "핵심 내용을 3줄로 요약해줘.";
           _galleryPrompt = data['galleryPrompt'] ?? "";
-          _selectedPromptType = data['selectedPromptType'] ?? 0;
+          _selectedPromptType = (data['selectedPromptType'] is int)
+              ? data['selectedPromptType']
+              : 0;
           _selectedDateRange = loadedRange;
         });
 
@@ -262,7 +412,7 @@ class _MainScreenState extends State<MainScreen> {
 
         await _checkSummarizedStatus();
 
-        if (loadedRange != null) {
+        if (loadedRange != null && !_isLoading) {
           await _fetchEmails();
         }
       } else {
@@ -277,228 +427,416 @@ class _MainScreenState extends State<MainScreen> {
     }
   }
 
-  String _decodeBody(gmail.MessagePart part) {
-    String text = "";
-    // 1. 현재 파트에 직접 데이터가 있는 경우
-    if (part.body?.data != null) {
-      try {
-        text += utf8.decode(base64Url.decode(part.body!.data!));
-      } catch (e) {
-        debugPrint("Decode error: $e");
-      }
-    }
-    // 2. 하위 파트가 있는 경우 (재귀 탐색)
-    if (part.parts != null) {
-      for (var subPart in part.parts!) {
-        text += _decodeBody(subPart);
-      }
-    }
-    // 태그 제거 및 공백 정리
-    return text
-        .replaceAll(RegExp(r'<[^>]*>|&nbsp;'), ' ')
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
-  }
+  // ✅ 1. UI 필터링만 전담하는 함수 (main.dart 내부에 추가)
+  void _updateUI() {
+    final allSavedMails = MailCacheManager.getCachedMails();
 
-  Future<void> _fetchEmails() async {
-    debugPrint("로그 1: _fetchEmails 함수 시작됨"); // <--- 추가
-    // 1. 구글 유저 객체가 없으면 복구 시도
-    if (_googleUser == null) {
-      _googleUser = await AppLogin.googleSignIn.signInSilently();
-      debugPrint("로그 2: 구글 유저 로그인 상태: ${_googleUser?.email}"); // <--- 추가
-      if (_googleUser == null) return;
-    }
-
-    if (_selectedDateRange == null) {
-      debugPrint(
-        "로그 3: 🚨 날짜 범위(_selectedDateRange)가 null입니다! 그래서 종료됨.",
-      ); // <--- 추가
-      setState(() {
-        _filteredEmails = [];
-        _isLoading = false;
-      });
-      return;
-    }
-
-    setState(() => _isLoading = true);
-
-    try {
-      // 2. [가장 중요] 401 에러의 핵심 해결책: 토큰 강제 체크 및 재인증
-      // 웹에서는 Hot Restart 후 액세스 토큰이 유효하지 않은 경우가 많습니다.
-      final auth = await _googleUser!.authentication;
-
-      // 만약 토큰이 없으면 강제로 다시 로그인 창을 띄우거나 세션을 갱신합니다.
-      if (auth.accessToken == null) {
-        debugPrint("토큰 만료 감지: 재인증 시도");
-        try {
-          _googleUser = await AppLogin.googleSignIn.signIn(); // 다시 로그인 유도
-          if (_googleUser == null) {
-            debugPrint("🚨 사용자가 로그인창을 닫았거나 취소했습니다.");
-            throw Exception("인증 실패");
-          }
-        } catch (error) {
-          // ★★★ 이 부분이 가장 중요합니다! ★★★
-          debugPrint("🚨 구글 로그인 에러 상세 발생: $error");
-          throw error;
-        }
-      }
-
-      final authHeaders = await _googleUser!.authHeaders;
-      final authenticateClient = GoogleAuthClient(authHeaders);
-      final gmailApi = gmail.GmailApi(authenticateClient);
-
-      // 3. 쿼리 생성 (기존 로직 유지)
-      // 3. 쿼리 생성 (타임스탬프 방식으로 정밀도 향상)
-
-      // 시작일의 00:00:00 (초 단위)
-      int startTimestamp =
-          DateTime(
-            _selectedDateRange!.start.year,
-            _selectedDateRange!.start.month,
-            _selectedDateRange!.start.day,
-          ).millisecondsSinceEpoch ~/
-          1000;
-
-      // 종료일의 23:59:59 (초 단위)
-      // 사용자가 선택한 종료일의 마지막 순간까지 포함하도록 설정합니다.
-      int endTimestamp =
-          DateTime(
+    setState(() {
+      _filteredEmails = allSavedMails.where((mail) {
+        // (A) 기간 필터링
+        bool inRange = true;
+        if (_selectedDateRange != null) {
+          // 시작일 00:00:00 ~ 종료일 23:59:59까지 포함
+          final start = _selectedDateRange!.start;
+          final end = DateTime(
             _selectedDateRange!.end.year,
             _selectedDateRange!.end.month,
             _selectedDateRange!.end.day,
             23,
             59,
             59,
-          ).millisecondsSinceEpoch ~/
-          1000;
-
-      // Gmail API 쿼리에 타임스탬프를 직접 사용
-      String q = "after:$startTimestamp before:$endTimestamp";
-
-      debugPrint("🚀 생성된 쿼리 시점: $q");
-      debugPrint(
-        "시작: ${DateTime.fromMillisecondsSinceEpoch(startTimestamp * 1000)}",
-      );
-      debugPrint(
-        "종료: ${DateTime.fromMillisecondsSinceEpoch(endTimestamp * 1000)}",
-      );
-
-      // 1. 화이트리스트에서 활성화된(true) 항목만 추출
-      List<String> activeSenders = _whiteList
-          .where((item) => item.contains(':true'))
-          .map((item) => item.split(':')[0].trim())
-          .toList();
-
-      if (_isFilterEnabled) {
-        if (activeSenders.isEmpty) {
-          // 🚩 필터는 켜졌는데 허용된 보낸이가 하나도 없다면?
-          // 결과는 무조건 0이어야 하므로 여기서 종료합니다.
-          debugPrint("로그: 필터가 On이지만 활성화된 화이트리스트가 없음. 조회를 중단합니다.");
-          setState(() {
-            _filteredEmails = [];
-            _isLoading = false;
-          });
-          return;
-        }
-        // 1. 도메인(@가 없는 항목)과 전체 이메일(@가 있는 항목) 분리
-        List<String> domains = activeSenders
-            .where((e) => !e.contains('@'))
-            .toList();
-        List<String> fullEmails = activeSenders
-            .where((e) => e.contains('@'))
-            .toList();
-
-        List<String> queryParts = [];
-
-        // 2. 전체 이메일 주소 쿼리 추가
-        if (fullEmails.isNotEmpty) {
-          queryParts.add(fullEmails.map((e) => 'from:$e').join(' OR '));
-        }
-
-        // 3. 도메인 주소 쿼리 추가
-        if (domains.isNotEmpty) {
-          queryParts.add(domains.map((e) => 'from:$e').join(' OR '));
-        }
-
-        // 4. 최종 쿼리 조합
-        if (queryParts.isNotEmpty) {
-          String senderQuery = queryParts.join(' OR ');
-          q += " ($senderQuery)";
-        }
-      }
-
-      // 4. API 호출
-      debugPrint("로그 4: API 요청 쿼리(q) -> $q"); // <--- 추가
-      final list = await gmailApi.users.messages.list(
-        'me',
-        q: q,
-        maxResults: 100,
-      );
-      debugPrint("로그 5: 검색된 메일 개수 -> ${list.messages?.length ?? 0}"); // <--- 추가
-      List<Map<String, dynamic>> fetchedEmails = [];
-
-      if (list.messages != null) {
-        for (var msg in list.messages!) {
-          final details = await gmailApi.users.messages.get(
-            'me',
-            msg.id!,
-            format: 'full',
           );
 
-          DateTime timestamp = DateTime.fromMillisecondsSinceEpoch(
-            int.parse(details.internalDate!),
-          ).toLocal();
-
-          String subject = '제목 없음';
-          String from = '알 수 없음';
-          String dateStr = '';
-          String messageId = '';
-
-          final headers = details.payload?.headers;
-          if (headers != null) {
-            for (var h in headers) {
-              if (h.name == 'Subject') subject = h.value ?? '';
-              if (h.name == 'From') from = h.value ?? '';
-              if (h.name == 'Date') dateStr = h.value ?? '';
-              if (h.name == 'Message-ID' || h.name == 'Message-Id') {
-                messageId = h.value ?? '';
-              }
-            }
-          }
-
-          fetchedEmails.add({
-            'id': msg.id,
-            'threadId': msg.threadId,
-            'subject': subject,
-            'from': from,
-            'date': dateStr,
-            'timestamp': timestamp,
-            'body': _decodeBody(details.payload!),
-            'messageId': messageId,
-          });
+          inRange =
+              mail.dateTime.isAfter(
+                start.subtract(const Duration(seconds: 1)),
+              ) &&
+              mail.dateTime.isBefore(end.add(const Duration(seconds: 1)));
         }
-      }
 
-      setState(() {
-        _filteredEmails = fetchedEmails;
-        _isLoading = false;
-      });
-      await _checkSummarizedStatus();
-    } catch (e) {
-      debugPrint("메일 가져오기 에러: $e");
-      // 401 에러가 나면 사용자에게 재로그인을 권유하거나 세션을 초기화합니다.
-      if (e.toString().contains('401')) {
-        debugPrint("인증 만료됨. 다시 로그인이 필요합니다.");
-        // 필요 시 _googleSignIn.signIn()을 여기서 부를 수도 있습니다.
-        setState(() {
-          _googleUser = null; // 이 줄이 핵심입니다. 다시 로그인 버튼 화면으로 보냅니다.
-          _isLoading = false;
-        });
-        await _checkSummarizedStatus();
-      } else {
-        setState(() => _isLoading = false);
+        // (B) 화이트리스트 필터링
+        bool isAllowed = true;
+        if (_isFilterEnabled) {
+          // 활성화된(true) 보낸이 목록 추출
+          final activeWhitelist = _whiteList
+              .where((item) => item.contains(':true'))
+              .map((item) => item.split(':')[0].trim().toLowerCase())
+              .toList();
+
+          if (activeWhitelist.isEmpty) {
+            // ✅ [교정] 필터가 켜져 있는데 활성화된 화이트리스트가 없으면 아무것도 보여주지 않음
+            isAllowed = false;
+          } else {
+            // 보낸이(sender)나 제목(subject)에 키워드가 포함되는지 확인
+            isAllowed = activeWhitelist.any(
+              (w) =>
+                  mail.sender.toLowerCase().contains(w) ||
+                  mail.subject.toLowerCase().contains(w),
+            );
+          }
+        }
+
+        return inRange && isAllowed;
+      }).toList();
+    });
+
+    debugPrint(
+      "📺 UI 업데이트 완료: ${_filteredEmails.length}건 표시됨 (필터: $_isFilterEnabled)",
+    );
+    _applyAdvancedFilter();
+  }
+
+  // ✅ 1. 각 서비스(Naver, Daum) 호출을 위한 공통 보조 함수
+  Future<List<IntegratedMail>> _fetchServiceEmails(
+    String serviceName,
+    dynamic serviceInstance,
+    DateTime startDate,
+    DateTime endDate,
+  ) async {
+    final id = await _storage.read(key: '${serviceName}_id');
+    final pw = await _storage.read(key: '${serviceName}_pw');
+
+    if (id != null && pw != null) {
+      try {
+        final mails = await serviceInstance.fetchEmails(
+          userName: id,
+          password: pw,
+          whitelist: <String>[], // 전체 수집 후 UI 필터링
+          startDate: startDate,
+          endDate: endDate,
+        );
+        // 수집 로그 기록
+        _logSyncActivity(serviceName, mails.length);
+        return mails;
+      } catch (e) {
+        debugPrint("🚨 $serviceName 수집 에러: $e");
       }
     }
+    return [];
+  }
+
+  // ✅ 2. 메인 통합 동기화 함수
+  Future<void> _fetchEmails({
+    bool isBackground = false,
+    bool forceReSync = false,
+  }) async {
+    if (_selectedDateRange == null) return;
+
+    // 1. 시작 상태 설정
+    if (!isBackground) {
+      setState(() {
+        _isLoading = true;
+        if (_loadingProgress < 0.1) {
+          _loadingProgress = 0.1;
+        }
+      });
+    }
+
+    try {
+      final now = DateTime.now();
+
+      DateTime getStartDate(String service) {
+        if (forceReSync) {
+          return DateTime.now().subtract(const Duration(days: 90));
+        }
+        final lastSync = MailCacheManager.getLastSyncTime(service);
+        return lastSync == null
+            ? now.subtract(const Duration(days: 90))
+            : lastSync.subtract(const Duration(hours: 1));
+      }
+
+      // 2. 실행할 서비스 태스크 리스트 구성 (병렬 처리를 위해 Future 리스트 생성)
+      // 실제 서비스 연동 여부에 따른 동적 리스트 구성이 필요할 수 있으나,
+      // 현재 구조에서는 3개를 모두 비동기로 실행합니다.
+      List<Future<List<IntegratedMail>>> tasks = [
+        _gmailService.fetchEmails(
+          query: _buildGmailQuery(startDate: getStartDate('gmail')),
+        ),
+        _fetchServiceEmails('naver', _naverService, getStartDate('naver'), now),
+        _fetchServiceEmails('daum', _daumService, getStartDate('daum'), now),
+      ];
+
+      int totalTasks = tasks.length;
+      int completedTasks = 0;
+
+      // 3. [핵심] 병렬 실행하면서 각각 완료될 때마다 진척도 업데이트
+      final results = await Future.wait(
+        tasks.map((task) async {
+          try {
+            final result = await task;
+            return result;
+          } catch (e) {
+            debugPrint("개별 서비스 로드 에러: $e");
+            return <IntegratedMail>[]; // 에러 시 빈 리스트 반환하여 전체 흐름 유지
+          } finally {
+            completedTasks++;
+            if (!isBackground) {
+              setState(() {
+                // 완료된 개수에 따라 0.1 ~ 1.0까지 진척도 계산
+                _loadingProgress = 0.1 + (completedTasks / totalTasks * 0.9);
+              });
+            }
+          }
+        }),
+      );
+
+      // 4. 데이터 통합
+      List<IntegratedMail> allServerMails = [
+        ...results[0],
+        ...results[1],
+        ...results[2],
+      ];
+
+      // 5. DB 저장
+      await MailCacheManager.saveMails(allServerMails);
+      await MailCacheManager.saveLastSyncTime('gmail', now);
+      await MailCacheManager.saveLastSyncTime('naver', now);
+      await MailCacheManager.saveLastSyncTime('daum', now);
+
+      // 6. [알림바 제거] 백그라운드 여부 상관없이 즉시 UI 갱신
+      _updateUI();
+
+      setState(() {
+        _isLoading = false;
+        _loadingProgress = 1.0;
+        _isInitialized = true; // 최초 데이터 로드 완료 표시
+        _hasNewMails = false; // 알림바 사용 안 함
+      });
+
+      await _checkSummarizedStatus();
+    } catch (e) {
+      debugPrint("🚨 통합 동기화 에러: $e");
+      setState(() {
+        _isLoading = false;
+        _isInitialized = true; // 에러가 나도 로딩바는 치워야 하므로 true
+      });
+    }
+  }
+
+  Future<void> _showMobileDateSyncDialog(BuildContext context) async {
+    DateTime now = DateTime.now();
+    DateTime threeMonthsAgo = DateTime(now.year, now.month - 3, now.day);
+
+    // 플러터 순정 기간 선택기를 호출합니다. (하이라이트 기능 기본 포함)
+    final DateTimeRange? pickedRange = await showDateRangePicker(
+      context: context,
+      initialDateRange:
+          _selectedDateRange ??
+          DateTimeRange(
+            start: now.subtract(const Duration(days: 7)), // 기본값 일주일 전
+            end: now,
+          ),
+      firstDate: threeMonthsAgo,
+      lastDate: now,
+      helpText: "조회 기간 선택",
+      saveText: "적용",
+      cancelText: "취소",
+      builder: (context, child) {
+        return Theme(
+          data: ThemeData.light().copyWith(
+            // ✅ 여기서 const를 제거했습니다.
+            colorScheme: ColorScheme.light(
+              primary: Colors.blueAccent, // 선택된 날짜 색상
+              onPrimary: Colors.white, // 선택된 날짜 위 글자 색
+              surface: Colors.white, // 달력 배경색
+              onSurface: Colors.black87, // 일반 날짜 글자 색
+              // ✅ 이제 메서드 호출이 가능합니다.
+              secondary: Colors.blueAccent.withAlpha(
+                25,
+              ), // 구간 하이라이트 배경색 (0.1 수준)
+            ),
+            dialogBackgroundColor: Colors.white,
+          ),
+          child: Column(
+            children: [
+              const SizedBox(height: 50), // 상단 여백
+              Expanded(child: child!),
+              // ✅ 하단에 '재동기화' 버튼을 위한 추가 영역
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: TextButton.icon(
+                    onPressed: () {
+                      Navigator.pop(context); // 달력 닫기
+                      setState(() {
+                        _selectedDateRange = DateTimeRange(
+                          start: threeMonthsAgo,
+                          end: now,
+                        );
+                      });
+                      _fetchEmails(forceReSync: true); // 강제 재동기화
+                    },
+                    icon: const Icon(
+                      Icons.sync,
+                      size: 16,
+                      color: Colors.redAccent,
+                    ),
+                    label: const Text(
+                      "최근 3개월치 이메일 서버 재수집",
+                      style: TextStyle(
+                        color: Colors.redAccent,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                        decoration: TextDecoration.underline,
+                      ),
+                    ),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      backgroundColor: Colors.redAccent.withOpacity(0.05),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+
+    // 결과값이 있으면 적용
+    if (pickedRange != null) {
+      setState(() {
+        _selectedDateRange = pickedRange;
+      });
+      _fetchEmails();
+    }
+  }
+
+  Future<void> _showForceResyncDialog() async {
+    final bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("전체 동기화"),
+        content: const Text(
+          "최근 90일간의 모든 데이터를 다시 동기화하시겠습니까?\n(데이터 양에 따라 시간이 걸릴 수 있습니다.)",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("취소"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.blueAccent),
+            child: const Text("확인"),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      // 사용자가 확인을 눌렀을 때만 강제 재동기화 실행
+      _fetchEmails(isBackground: false, forceReSync: true);
+    }
+  }
+
+  void _applyAdvancedFilter() {
+    setState(() {
+      _displayEmails = _filteredEmails.where((email) {
+        // .toLowerCase() 앞의 ?. 를 모두 . 으로 바꿉니다.
+        final bool matchesSearch =
+            _searchQuery.isEmpty ||
+            email.subject.toLowerCase().contains(_searchQuery.toLowerCase()) ||
+            email.sender.toLowerCase().contains(_searchQuery.toLowerCase());
+
+        final bool matchesSource = _selectedSources.contains(email.source);
+
+        return matchesSearch && matchesSource;
+      }).toList();
+    });
+  }
+
+  // 4. [추가] 상단 알림 인디케이터 위젯 (build 함수 상단에서 호출)
+  Widget _buildNewMailIndicator() {
+    if (!_hasNewMails) return const SizedBox.shrink();
+
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _updateUI();
+          _hasNewMails = false;
+        });
+      },
+      child: Container(
+        width: double.infinity,
+        color: Colors.blueAccent.withOpacity(0.9),
+        padding: const EdgeInsets.symmetric(
+          vertical: 10,
+          horizontal: 16,
+        ), // 가로 패딩 추가
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: const [
+            Icon(Icons.refresh, color: Colors.white, size: 20),
+            SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                "새로운 메일이 도착했습니다. 확인하려면 클릭하세요.",
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+                overflow: TextOverflow.ellipsis, // 혹시 넘치면 ... 처리
+                softWrap: false, // 줄바꿈 방지 (취향에 따라 true 가능)
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ✅ Firestore 로그 기록을 위한 헬퍼 함수 (코드 깔끔화)
+  Future<void> _logSyncActivity(String platform, int count) async {
+    if (count == 0) return;
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+        '${platform}_integration': {
+          'last_sync_at': FieldValue.serverTimestamp(),
+          'last_mail_count': count,
+        },
+      }, SetOptions(merge: true));
+    }
+  }
+
+  // ✅ _fetchEmails 함수 아래에 추가
+  String _buildGmailQuery({DateTime? startDate}) {
+    if (_selectedDateRange == null) return "";
+
+    // ✅ 1. 외부에서 넘겨준 시작일이 있으면 그것을 우선 사용, 없으면 설정된 범위 사용
+    final DateTime effectiveStart = startDate ?? _selectedDateRange!.start;
+
+    // 시작 시각 (Unix Timestamp 변환)
+    int startTimestamp =
+        DateTime(
+          effectiveStart.year,
+          effectiveStart.month,
+          effectiveStart.day,
+          effectiveStart.hour, // 👈 1시간 중첩을 위해 시간 정보도 포함합니다.
+          effectiveStart.minute,
+        ).millisecondsSinceEpoch ~/
+        1000;
+
+    // 종료 시각 (23:59:59)
+    int endTimestamp =
+        DateTime(
+          _selectedDateRange!.end.year,
+          _selectedDateRange!.end.month,
+          _selectedDateRange!.end.day,
+          23,
+          59,
+          59,
+        ).millisecondsSinceEpoch ~/
+        1000;
+
+    String q = "after:$startTimestamp before:$endTimestamp";
+
+    return q;
   }
 
   Future<void> _checkSummarizedStatus() async {
@@ -604,32 +942,49 @@ class _MainScreenState extends State<MainScreen> {
         .collection('summaries')
         .doc(mailId);
 
-    // 1. 캐시 데이터 로드 로직
+    // 1. 캐시 데이터 로드 로직 (시간 비교 로직 추가)
     if (!forceRefresh) {
       final doc = await docRef.get();
       if (doc.exists) {
-        print('DEBUG: [캐시 발견] Firestore에서 기존 데이터를 불러옵니다.');
         final data = doc.data()!;
-        setState(() {
-          // Firestore에 'result'로 저장된 값이 Map인지 확인 후 처리
-          _summarizedContent[mailId] = data['result'];
-          _extractedEventData[mailId] = data['eventData'];
-          // _currentDetectedEvent = data['eventData'];
-        });
-        return;
+
+        // [핵심 추가: 시간차 오류 해결]
+        // Firestore의 저장된 시간(updatedAt)을 가져옴
+        final dynamic updatedAtRaw = data['updatedAt'];
+        DateTime? updatedTime;
+
+        if (updatedAtRaw is Timestamp) {
+          updatedTime = updatedAtRaw.toDate();
+        }
+
+        // 분석된 시간이 프롬프트 수정 시간보다 이전이면 캐시 무시
+        bool isOutdated =
+            (updatedTime == null) ||
+            updatedTime.isBefore(_lastPromptUpdateTime);
+
+        if (!isOutdated) {
+          print('DEBUG: [최신 캐시 발견] 기존 데이터를 불러옵니다.');
+          setState(() {
+            _summarizedContent[mailId] = data['result'];
+            _extractedEventData[mailId] = data['eventData'];
+          });
+          return;
+        }
+        print('DEBUG: [캐시 만료] 프롬프트가 변경되어 재분석을 진행합니다.');
       }
     }
-    print('DEBUG: [서버 요청] 캐시가 없거나 강제 새로고침입니다. 서버로 요청을 보냅니다.');
+
+    print('DEBUG: [서버 요청] 캐시가 없거나 만료되었습니다. 서버로 요청을 보냅니다.');
     setState(() {
-      // _summarizedContent[mailId] = "요약 중...";
       _summarizedContent.remove(mailId);
-      // _currentDetectedEvent = null; // 요청 시작 시 이전 일정 초기화
     });
 
+    // 메모리에 있는 최신 프롬프트를 즉시 사용 (1초 지연 해결)
     final String activePrompt = (_selectedPromptType == 0)
         ? _customPrompt
         : _galleryPrompt;
-    final String finalInstruction = activePrompt.isEmpty
+
+    final String finalInstruction = activePrompt.trim().isEmpty
         ? _customPrompt
         : activePrompt;
 
@@ -651,31 +1006,27 @@ Body: ${email['body']}
               'promptInstruction': finalInstruction,
             }),
           )
-          .timeout(const Duration(seconds: 20)); // 20초 안에 응답 없으면 에러로 간주
+          .timeout(const Duration(seconds: 20));
+
       print('DEBUG: [서버 응답 받음] StatusCode: ${response.statusCode}');
       if (response.statusCode == 200) {
         try {
           final Map<String, dynamic> parsedJson = jsonDecode(response.body);
-          print('DEBUG: [응답 데이터] $parsedJson');
           if (parsedJson['status'] == 'error') {
-            print('DEBUG: [서버 비즈니스 에러] status가 error입니다. 가이드를 표시합니다.');
             _setErrorState(mailId);
-            // 가이드 메시지이므로 이후 '정상 분석' 로직을 타지 않고 종료
             return;
           }
-          // 1. event_info 추출 (List일 수도, Map일 수도 있음)
+
           final dynamic rawEventData = parsedJson['event_info'];
           List<dynamic> eventList = [];
 
           if (rawEventData is List) {
-            // 이미 배열인 경우: 비어있지 않은 것만 필터링
             eventList = rawEventData
                 .where(
                   (e) => e['title'] != null && e['title'].toString().isNotEmpty,
                 )
                 .toList();
           } else if (rawEventData is Map && rawEventData.isNotEmpty) {
-            // 단일 객체인 경우: 리스트로 감싸줌
             if (rawEventData['title']?.toString().isNotEmpty ?? false) {
               eventList = [rawEventData];
             }
@@ -685,37 +1036,28 @@ Body: ${email['body']}
 
           setState(() {
             _summarizedContent[mailId] = parsedJson;
-
-            // 2. 일정 데이터 처리 (비어있으면 null, 있으면 리스트 저장)
-            if (eventList.isEmpty) {
-              _extractedEventData[mailId] = null;
-              // _currentDetectedEvent = null;
-            } else {
-              // 여러 개가 들어와도 그대로 저장 (나중에 위젯에서 ListView.builder 등으로 표시)
-              _extractedEventData[mailId] = eventList;
-              // _currentDetectedEvent = eventList;
-            }
+            _extractedEventData[mailId] = eventList.isEmpty ? null : eventList;
           });
 
-          // 3. Firestore 저장
+          // 3. Firestore 저장 (updatedAt에 현재 서버 시간 기록)
           await docRef.set({
             'result': parsedJson,
-            'eventData': eventList.isEmpty ? null : eventList, // 배열 형태로 저장됨
+            'eventData': eventList.isEmpty ? null : eventList,
             'messageId': finalMessageId,
-            'updatedAt': FieldValue.serverTimestamp(),
+            'updatedAt': FieldValue.serverTimestamp(), // 서버 시간 기록
           }, SetOptions(merge: true));
-          print('DEBUG: [성공] 데이터를 화면에 표시하고 Firestore에 저장합니다.');
+
+          print('DEBUG: [성공] 분석 완료 및 Firestore 저장 성공');
         } catch (e) {
           debugPrint("❌ JSON 파싱 에러: $e");
-          _setErrorState(mailId); // 👈 헬퍼 함수로 통일
+          _setErrorState(mailId);
         }
       } else {
-        print('DEBUG: [서버 응답 오류] StatusCode가 200이 아닙니다.');
-        _setErrorState(mailId); // 👈 서버 응답 오류 시에도 가이드 표시
+        _setErrorState(mailId);
       }
     } catch (e) {
       debugPrint("에러 발생: $e");
-      _setErrorState(mailId); // 👈 타임아웃 등 통신 에러 시에도 가이드 표시
+      _setErrorState(mailId);
     }
   }
 
@@ -732,15 +1074,17 @@ Body: ${email['body']}
     });
   }
 
-  List<Map<String, dynamic>> get _displayEmails {
-    if (_searchQuery.isEmpty) return _filteredEmails;
-    return _filteredEmails.where((email) {
-      final subject = (email['subject'] ?? '').toLowerCase();
-      final from = (email['from'] ?? '').toLowerCase();
-      final query = _searchQuery.toLowerCase();
-      return subject.contains(query) || from.contains(query);
-    }).toList();
-  }
+  // List<IntegratedMail> get _displayEmails {
+  //   if (_searchQuery.isEmpty) return _filteredEmails;
+  //   return _filteredEmails.where((email) {
+  //     // email['subject'] 대신 email.subject를 사용합니다.
+  //     final subject = email.subject.toLowerCase();
+  //     // email['from'] 대신 email.sender를 사용합니다.
+  //     final from = email.sender.toLowerCase();
+  //     final query = _searchQuery.toLowerCase();
+  //     return subject.contains(query) || from.contains(query);
+  //   }).toList();
+  // }
 
   Widget _buildCalendarEventCard(dynamic eventData) {
     if (eventData == null) return const SizedBox.shrink();
@@ -999,66 +1343,95 @@ Body: ${email['body']}
     // [2] 로그인 후 화면 (반응형 레이아웃)
     return Scaffold(
       appBar: AppBar(
-        title: Container(
-          height: 42,
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.grey[300]!),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.05),
-                blurRadius: 4,
-                offset: const Offset(0, 2),
-              ),
-            ],
-          ),
-          child: TextField(
-            controller: _searchController,
-            onChanged: (value) => setState(() => _searchQuery = value),
-            style: const TextStyle(fontSize: 15),
-            decoration: InputDecoration(
-              hintText: _searchQuery.isEmpty
-                  ? "전체 ${_filteredEmails.length}건의 메일 검색"
-                  : "검색 결과 ${_displayEmails.length}건",
-              hintStyle: TextStyle(fontSize: 14, color: Colors.grey[400]),
-              prefixIcon: Icon(
-                Icons.search,
-                color: Colors.blueAccent[700],
-                size: 22,
-              ),
-              suffixIcon: _searchQuery.isNotEmpty
-                  ? IconButton(
-                      icon: const Icon(
-                        Icons.clear,
-                        size: 20,
-                        color: Colors.grey,
-                      ),
-                      onPressed: () {
-                        _searchController.clear();
-                        setState(() => _searchQuery = "");
-                      },
-                    )
-                  : null,
-              border: InputBorder.none,
-              contentPadding: const EdgeInsets.symmetric(vertical: 10),
-            ),
-          ),
-        ),
-        centerTitle: true,
         elevation: 0,
+        // 1. [Leading 영역] 선택 모드일 때만 'X' 취소 버튼 표시
+        leading: _selectedMailIds.isNotEmpty
+            ? IconButton(
+                icon: const Icon(Icons.keyboard_backspace_outlined, size: 32),
+                onPressed: () {
+                  setState(() {
+                    _selectedMailIds.clear();
+                    _isSelectionMode = false;
+                  });
+                },
+              )
+            : null, // 평소에는 기본값(뒤로가기 등) 유지
+        // 2. [Title 영역] 선택 모드일 때는 개수 표시, 평소에는 검색창 표시
+        title: _selectedMailIds.isNotEmpty
+            ? Text("${_selectedMailIds.length}개 선택됨")
+            : Container(
+                // 기존 검색창 로직 그대로 유지
+                height: 42,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.grey[300]!),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.05),
+                      blurRadius: 4,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: TextField(
+                  controller: _searchController,
+                  focusNode: _searchFocusNode,
+                  onChanged: (value) {
+                    setState(() => _searchQuery = value);
+                    _applyAdvancedFilter(); // 필터 즉시 적용
+                  },
+                  style: const TextStyle(fontSize: 15),
+                  decoration: InputDecoration(
+                    hintText: _searchQuery.isEmpty
+                        ? "전체 ${_filteredEmails.length}건의 메일 검색"
+                        : "검색 결과 ${_displayEmails.length}건",
+                    hintStyle: TextStyle(fontSize: 14, color: Colors.grey[400]),
+                    prefixIcon: Icon(
+                      Icons.search,
+                      color: Colors.blueAccent[700],
+                      size: 22,
+                    ),
+                    suffixIcon: _searchQuery.isNotEmpty
+                        ? IconButton(
+                            icon: const Icon(
+                              Icons.close,
+                              size: 28,
+                              color: Colors.grey,
+                            ),
+                            onPressed: () {
+                              _searchController.clear();
+                              setState(() => _searchQuery = "");
+                            },
+                          )
+                        : null,
+                    border: InputBorder.none,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                  ),
+                ),
+              ),
+        centerTitle: true,
+
+        // 3. [Actions 영역] 선택 모드일 때는 삭제 버튼, 평소에는 프로필 버튼
         actions: [
-          Builder(
-            builder: (context) => IconButton(
-              icon: const Icon(Icons.account_circle, size: 30),
-              onPressed: () {
-                // 1. 상태를 true로 변경하여 endDrawer 위젯이 생성되게 함
-                print("GOOGLE USER: $_googleUser");
-                print("USER MODEL: $_currentUserModel");
-                Scaffold.of(context).openEndDrawer();
-              },
+          if (_selectedMailIds.isNotEmpty)
+            // 선택 모드일 때 나타나는 삭제 버튼
+            IconButton(
+              icon: const Icon(Icons.delete_outline, size: 32),
+              onPressed: () => _showBulkDeleteDialog(), // 삭제 확인 팝업 호출
+            )
+          else
+            // 평소에 나타나는 프로필 버튼 (기존 로직 그대로 유지)
+            Builder(
+              builder: (context) => IconButton(
+                icon: const Icon(Icons.account_circle, size: 30),
+                onPressed: () {
+                  print("GOOGLE USER: $_googleUser");
+                  print("USER MODEL: $_currentUserModel");
+                  Scaffold.of(context).openEndDrawer();
+                },
+              ),
             ),
-          ),
         ],
       ),
       drawer: FilterDrawer(
@@ -1120,8 +1493,6 @@ Body: ${email['body']}
                 _fetchEmails();
               }
             },
-        // isProfileRegistered:
-        //     _currentUserModel != null && _currentUserModel!.isRegistered,
       ),
       endDrawer: _googleUser == null
           ? null // 구글 로그인조차 안 되어 있으면 표시 안 함
@@ -1167,6 +1538,27 @@ Body: ${email['body']}
 
       body: LayoutBuilder(
         builder: (context, constraints) {
+          Widget filterChipsSection = AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            height: _isSearchFocused ? 50 : 0, // 포커스 시 50px, 아닐 때 0px
+            curve: Curves.easeInOut,
+            child: _isSearchFocused
+                ? SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 4,
+                    ),
+                    child: Row(
+                      children: [
+                        _buildFilterChip("Google", MailSource.gmail),
+                        _buildFilterChip("Naver", MailSource.naver),
+                        _buildFilterChip("Daum", MailSource.daum),
+                      ],
+                    ),
+                  )
+                : const SizedBox.shrink(),
+          );
           if (constraints.maxWidth > 700) {
             return Row(
               children: [
@@ -1178,9 +1570,64 @@ Body: ${email['body']}
                     children: [
                       Column(
                         children: [
+                          filterChipsSection,
+                          _buildNewMailIndicator(),
                           if (_selectedDateRange != null) _buildDateHeader(),
-                          Expanded(child: _buildMainEmailList()),
+
+                          Expanded(
+                            child: _buildListWithHUD(context, isWeb: true),
+                          ),
                         ],
+                      ),
+                      // [왼쪽 리스트 영역의 우측 하단 버튼들]
+                      Positioned(
+                        right: 16,
+                        bottom: 16,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // 1. Refresh 버튼 (기존 유지)
+                            GestureDetector(
+                              onLongPress: () => _showForceResyncDialog(),
+                              child: FloatingActionButton(
+                                heroTag: "web_refresh_btn",
+                                mini: true,
+                                backgroundColor: Colors.white.withOpacity(0.9),
+                                onPressed: _isLoading
+                                    ? null
+                                    : () => _fetchEmails(isBackground: false),
+                                child: _isLoading
+                                    ? const SizedBox(
+                                        width: 18,
+                                        height: 18,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : const Icon(
+                                        Icons.refresh,
+                                        color: Colors.blueAccent,
+                                      ),
+                              ),
+                            ),
+
+                            const SizedBox(height: 12), // 버튼 사이 간격
+                            // 2. AI 프롬프트 버튼 (기존 파일의 위젯 호출)
+                            // ai_prompt_button.dart에 정의된 위젯을 그대로 사용합니다.
+                            AIPromptButton(
+                              customPrompt: _customPrompt,
+                              galleryPrompt: _galleryPrompt,
+                              selectedPromptType: _selectedPromptType,
+                              onPromptSaved: (newPrompt, newGallery, newType) {
+                                setState(() {
+                                  _customPrompt = newPrompt;
+                                  _galleryPrompt = newGallery;
+                                  _selectedPromptType = newType;
+                                });
+                              },
+                            ),
+                          ],
+                        ),
                       ),
                     ],
                   ),
@@ -1220,22 +1667,25 @@ Body: ${email['body']}
                       ? const Center(child: Text("메일을 선택해 주세요."))
                       : WebEmailDetailView(
                           email: _selectedEmail!,
-                          rawData: _summarizedContent[_selectedEmail!['id']],
-                          analysisMap:
-                              _summarizedContent[_selectedEmail!['id']] is Map
-                              ? _summarizedContent[_selectedEmail!['id']]
-                              : null,
-                          // ✅ 일정 데이터 전달
-                          eventData: _extractedEventData[_selectedEmail!['id']],
-                          onRefresh: () {
-                            _summarizeEmail(
+                          summarizedContent: _summarizedContent,
+                          extractedEventData: _extractedEventData,
+                          onRefresh: () async {
+                            // async/await를 추가하여 작업 완료 후 UI가 갱신되도록 합니다.
+                            await _summarizeEmail(
                               _selectedEmail!,
                               forceRefresh: true,
                             );
+                            if (mounted) setState(() {});
                           },
-                          // ✅ 캘린더 추가 함수 연결
                           onAddToCalendar: (event) =>
                               _addToGoogleCalendar(event),
+                          onDelete: () {
+                            setState(() {
+                              _selectedEmail = null;
+                              _isMobileDetailOpen = false;
+                            });
+                            _updateUI();
+                          },
                         ),
                 ),
               ],
@@ -1245,8 +1695,10 @@ Body: ${email['body']}
           // 모바일 레이아웃 (기존 동일)
           return Column(
             children: [
+              filterChipsSection,
+              _buildNewMailIndicator(),
               if (_selectedDateRange != null) _buildDateHeader(),
-              Expanded(child: _buildMainEmailList()),
+              Expanded(child: _buildListWithHUD(context, isWeb: false)),
             ],
           );
         },
@@ -1254,217 +1706,449 @@ Body: ${email['body']}
       // Scaffold의 마지막 부분입니다.
       floatingActionButton: LayoutBuilder(
         builder: (context, constraints) {
-          // 1. 모바일 환경 (너비 700 이하)
+          // 1. 공통 버튼 위젯 정의 (중복 코드를 줄이기 위해 변수로 선언)
+          final aiButton = AIPromptButton(
+            customPrompt: _customPrompt, // 사용자 1 내용
+            galleryPrompt: _galleryPrompt, // 사용자 2 (갤러리) 내용
+            selectedPromptType: _selectedPromptType, // 현재 어떤 탭이 활성화인지 (0 or 1)
+            nickname: _currentUserModel?.nickname,
+            onPromptSaved: (newCustom, newGallery, newType) {
+              _customPrompt = newCustom;
+              _galleryPrompt = newGallery;
+              _selectedPromptType = newType;
+              _lastPromptUpdateTime = DateTime.now();
+              _summarizedContent.clear();
+
+              setState(() {
+                // UI 업데이트
+              });
+
+              // 2. 현재 선택된 메일이 있다면 즉시 다시 요약 실행 (Gemini 2.5-flash)
+              if (_selectedEmail != null) {
+                _summarizeEmail(_selectedEmail!, forceRefresh: true);
+              }
+            },
+          );
+
+          // 2. 모바일 환경 처리
           if (constraints.maxWidth <= 700) {
-            // 상세창이 열려있을 때만 숨기고, 리스트에서는 선택 여부 상관없이 보여줌
-            return _isMobileDetailOpen
-                ? const SizedBox.shrink()
-                : const ManualButton();
+            if (_isMobileDetailOpen) return const SizedBox.shrink();
+            return aiButton;
           }
-          // 2. 웹 환경 (너비 700 초과)
+          // 3. 웹 환경 처리
           else {
-            // 기존 로직 유지: 메일이 선택되지 않았을 때만 보여줌
-            return _selectedEmail == null
-                ? const ManualButton()
-                : const SizedBox.shrink();
+            return const SizedBox.shrink();
           }
         },
       ),
     ); // Scaffold 끝
   }
 
+  Widget _buildFilterChip(String label, MailSource source) {
+    final bool isSelected = _selectedSources.contains(source);
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: FilterChip(
+        label: Text(label, style: const TextStyle(fontSize: 12)),
+        selected: isSelected,
+        onSelected: (bool selected) {
+          setState(() {
+            if (selected) {
+              _selectedSources.add(source);
+            } else {
+              if (_selectedSources.length > 1) _selectedSources.remove(source);
+            }
+          });
+          _applyAdvancedFilter(); // 상태 변경 시 필터 즉시 적용
+        },
+        backgroundColor: Colors.grey[100],
+        selectedColor: Colors.blueAccent.withOpacity(0.2),
+        checkmarkColor: Colors.blueAccent,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      ),
+    );
+  }
   // --- 아래는 가독성을 위해 build 함수에서 로직을 분리한 보조 위젯들입니다 ---
 
   // 1. 상단 날짜 표시 바
   Widget _buildDateHeader() {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-      color: Colors.grey[100],
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.calendar_today, size: 14, color: Colors.blue),
-          const SizedBox(width: 8),
-          Text(
-            "${_selectedDateRange!.start.year}/${_selectedDateRange!.start.month.toString().padLeft(2, '0')}/${_selectedDateRange!.start.day.toString().padLeft(2, '0')} ~ "
-            "${_selectedDateRange!.end.year}/${_selectedDateRange!.end.month.toString().padLeft(2, '0')}/${_selectedDateRange!.end.day.toString().padLeft(2, '0')}",
-            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
-          ),
-        ],
+    return GestureDetector(
+      // ✅ 클릭 시 통합 팝업 실행 (함수 이름은 _showMobileDateSyncDialog로 가정)
+      onTap: () => _showMobileDateSyncDialog(context),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
+        // ✅ 클릭할 수 있다는 느낌을 주기 위해 배경색을 살짝 조정했습니다.
+        color: Colors.blueAccent.withOpacity(0.08),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(
+              Icons.calendar_today,
+              size: 14,
+              color: Colors.blueAccent,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              "${_selectedDateRange!.start.year}/${_selectedDateRange!.start.month.toString().padLeft(2, '0')}/${_selectedDateRange!.start.day.toString().padLeft(2, '0')} ~ "
+              "${_selectedDateRange!.end.year}/${_selectedDateRange!.end.month.toString().padLeft(2, '0')}/${_selectedDateRange!.end.day.toString().padLeft(2, '0')}",
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600, // 굵기를 조금 더 주어 강조
+                color: Colors.blueAccent, // 텍스트 색상 변경
+              ),
+            ),
+            const SizedBox(width: 4),
+            // ✅ 아래 화살표 아이콘을 추가하여 "누르면 무언가 열린다"는 힌트를 제공합니다.
+            const Icon(
+              Icons.keyboard_arrow_down,
+              size: 16,
+              color: Colors.blueAccent,
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  // 2. 메일 리스트 (기존 로직 유지)
+  // 2. 메일 리스트 수정 버전
   Widget _buildMainEmailList() {
-    if (_isLoading) return const Center(child: CircularProgressIndicator());
-    if (_displayEmails.isEmpty) {
-      return const Center(child: Text("조건에 맞는 메일이 없습니다."));
+    // 1. [중앙 로딩] 로딩 중인데 화면에 표시할 메일이 아직 하나도 없는 경우 (최초 로딩 시에만)
+    if (_isLoading && _displayEmails.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 40),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Text(
+                "메일을 불러오는 중입니다...",
+                style: TextStyle(
+                  color: Colors.blueGrey,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
+              const SizedBox(height: 25),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: LinearProgressIndicator(
+                  value: _loadingProgress,
+                  minHeight: 12,
+                  backgroundColor: Colors.grey[200],
+                  valueColor: const AlwaysStoppedAnimation<Color>(
+                    Colors.blueAccent,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                "${(_loadingProgress * 100).toInt()}% 완료",
+                style: const TextStyle(
+                  color: Colors.blueAccent,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
     }
 
-    // [수정] RefreshIndicator로 ListView를 감쌉니다.
-    return RefreshIndicator(
-      onRefresh: () async {
-        // 화면을 당겼을 때 실행될 함수 (메일 목록 새로고침)
-        await _fetchEmails();
-      },
-      child: ListView.builder(
-        // [중요] 리스트가 짧아도 당겨지도록 물리 효과를 강제 적용합니다.
-        physics: const AlwaysScrollableScrollPhysics(),
-        itemCount: _displayEmails.length,
-        itemBuilder: (context, index) {
-          final email = _displayEmails[index];
-          final from = email['from'] ?? '알 수 없음';
-          final bool isSelected =
-              _selectedEmail != null && _selectedEmail!['id'] == email['id'];
-
-          return ListTile(
-            tileColor: isSelected ? Colors.blue[50] : Colors.white,
-            title: Text(
-              email['subject'],
-              style: TextStyle(
-                fontWeight: _readIds.contains(email['id'])
-                    ? FontWeight.normal
-                    : FontWeight.bold,
-                color: _readIds.contains(email['id'])
-                    ? Colors.grey
-                    : Colors.black,
-              ),
+    // 2. [데이터 없음 처리] 로딩이 끝났는데 메일이 없는 경우
+    if (!_isLoading && _isInitialized && _displayEmails.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.mail_outline, size: 60, color: Colors.grey[300]),
+            const SizedBox(height: 16),
+            const Text(
+              "조건에 맞는 메일이 없습니다.",
+              style: TextStyle(color: Colors.grey, fontSize: 15),
             ),
-            subtitle: Text(
-              "$from\n${_formatDate(email['timestamp'])}",
-              style: TextStyle(
-                fontSize: 12,
-                color: _summarizedIds.contains(email['id'])
-                    ? Colors.grey[400]
-                    : Colors.grey[600],
-              ),
+          ],
+        ),
+      );
+    }
+
+    // 3. [데이터 리스트 표시] 메일이 있거나, 이미 메일이 있는 상태에서 새로고침 중일 때
+    // Stack을 그대로 유지하면서 Column으로 감싸 상단 바를 추가합니다.
+    return Column(
+      children: [
+        // ✅ [추가] 가느다란 로딩 가로바 (이미 리스트가 있는 상태에서 로딩할 때 노출)
+        if (_isLoading)
+          const SizedBox(
+            height: 2,
+            child: LinearProgressIndicator(
+              backgroundColor: Colors.transparent,
+              valueColor: AlwaysStoppedAnimation<Color>(Colors.blueAccent),
             ),
-            onTap: () async {
-              final bool isMobile = MediaQuery.of(context).size.width <= 700;
-              final selectedEmail = Map<String, dynamic>.from(email);
+          ),
 
-              if (isMobile) {
-                showDialog(
-                  context: context,
-                  barrierDismissible: false,
-                  barrierColor: Colors.transparent,
-                  builder: (context) =>
-                      const Center(child: CircularProgressIndicator()),
-                );
-              }
+        Expanded(
+          child: Stack(
+            children: [
+              RefreshIndicator(
+                onRefresh: () async => await _fetchEmails(isBackground: false),
+                child: ListView.builder(
+                  controller: _scrollController,
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  itemCount: _displayEmails.length,
+                  itemBuilder: (context, index) {
+                    final email = _displayEmails[index];
+                    final bool isWeb = MediaQuery.of(context).size.width > 700;
+                    final bool isSelectedForDelete = _selectedMailIds.contains(
+                      email.id,
+                    );
+                    final bool isCurrentSelected =
+                        _selectedEmail != null &&
+                        _selectedEmail!['id'] == email.id;
 
-              try {
-                setState(() {
-                  _selectedEmail = selectedEmail;
-                  _isMobileDetailOpen = true;
-                  if (!_readIds.contains(email['id'])) {
-                    _readIds.add(email['id']);
-                  }
-                });
+                    return ListTile(
+                      tileColor: isSelectedForDelete
+                          ? Colors.red[50]
+                          : (isCurrentSelected
+                                ? Colors.blue[50]
+                                : Colors.white),
 
-                _markAsRead(email['id']);
+                      // --- 아이콘 영역 (생략, 기존 코드 그대로 유지) ---
+                      leading: (isWeb || _isSelectionMode)
+                          ? Checkbox(
+                              value: isSelectedForDelete,
+                              onChanged: (bool? value) {
+                                setState(() {
+                                  if (value == true) {
+                                    _selectedMailIds.add(email.id);
+                                  } else {
+                                    _selectedMailIds.remove(email.id);
+                                    if (_selectedMailIds.isEmpty && !isWeb)
+                                      _isSelectionMode = false;
+                                  }
+                                });
+                              },
+                            )
+                          : GestureDetector(
+                              onLongPress: () {
+                                if (!isWeb) {
+                                  setState(() {
+                                    _isSelectionMode = true;
+                                    _selectedMailIds.add(email.id);
+                                  });
+                                }
+                              },
+                              child: Container(
+                                width: 38,
+                                height: 38,
+                                decoration: () {
+                                  if (email.source == MailSource.naver) {
+                                    return BoxDecoration(
+                                      color: const Color(0xFF03C75A),
+                                      borderRadius: BorderRadius.circular(10),
+                                    );
+                                  } else if (email.source == MailSource.daum) {
+                                    return BoxDecoration(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(15),
+                                      border: Border.all(
+                                        color: const Color(
+                                          0xFF3866E6,
+                                        ).withOpacity(0.3),
+                                      ),
+                                    );
+                                  } else {
+                                    // return const BoxDecoration(
+                                    //   color: Color(0xFF4285F4),
+                                    //   shape: BoxShape.circle,
+                                    return BoxDecoration(
+                                      color: Colors.white,
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        color: Colors.grey.withOpacity(
+                                          0.2,
+                                        ), // 테두리 색상
+                                        width: 1,
+                                      ),
+                                    );
+                                  }
+                                }(),
+                                child: Center(
+                                  child: () {
+                                    if (email.source == MailSource.naver) {
+                                      return const Text(
+                                        "N",
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.w900,
+                                          fontSize: 20,
+                                        ),
+                                      );
+                                    } else if (email.source ==
+                                        MailSource.daum) {
+                                      return const Text(
+                                        "D",
+                                        style: TextStyle(
+                                          color: Color(0xFF3866E6),
+                                          fontWeight: FontWeight.w900,
+                                          fontSize: 20,
+                                        ),
+                                      );
+                                    } else {
+                                      // return const FaIcon(
+                                      //   FontAwesomeIcons.google,
+                                      //   // color: Colors.white,
+                                      //   color: Color(0xFF4285F4),
+                                      //   size: 18,
+                                      return Padding(
+                                        padding: const EdgeInsets.all(
+                                          7.0,
+                                        ), // 테두리와 로고 사이의 여백 (기호에 맞게 조절)
+                                        child: Image.asset(
+                                          'assets/images/google_logo.png',
+                                          fit: BoxFit.contain,
+                                        ),
+                                      );
+                                    }
+                                  }(),
+                                ),
+                              ),
+                            ),
 
-                if (isMobile) {
-                  // 1. 여기서 새로운 _summarizeEmail이 실행되며 _currentDetectedEvent에 JSON 일정이 담깁니다.
-                  await _summarizeEmail(selectedEmail, forceRefresh: false);
+                      title: Text(
+                        email.subject,
+                        style: TextStyle(
+                          fontWeight: _readIds.contains(email.id)
+                              ? FontWeight.normal
+                              : FontWeight.bold,
+                          color: _readIds.contains(email.id)
+                              ? Colors.grey
+                              : Colors.black,
+                        ),
+                      ),
+                      subtitle: Text(
+                        "${email.sender}\n${_formatDate(email.dateTime)}",
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: _summarizedIds.contains(email.id)
+                              ? Colors.grey[400]
+                              : Colors.grey[600],
+                        ),
+                      ),
 
-                  if (!mounted) return;
-                  Navigator.of(context, rootNavigator: true).pop();
+                      // --- 탭/롱프레스 로직 (생략, 기존 코드 그대로 유지) ---
+                      onTap: () async {
+                        if (_isSelectionMode ||
+                            (isWeb && _selectedMailIds.isNotEmpty)) {
+                          setState(() {
+                            if (_selectedMailIds.contains(email.id)) {
+                              _selectedMailIds.remove(email.id);
+                              if (_selectedMailIds.isEmpty && !isWeb)
+                                _isSelectionMode = false;
+                            } else {
+                              _selectedMailIds.add(email.id);
+                            }
+                          });
+                        } else {
+                          // ... 상세 페이지 이동 로직 생략 (기존 코드 유지) ...
+                          final bool isMobile =
+                              MediaQuery.of(context).size.width <= 700;
+                          final selectedEmailMap = {
+                            'id': email.id,
+                            'threadId': email.threadId,
+                            'subject': email.subject,
+                            'from': email.sender,
+                            'timestamp': email.dateTime,
+                            'body': email.body,
+                          };
 
-                  // 2. 상세 페이지로 이동
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) {
-                        // 1. 공통으로 사용할 데이터 추출 로직
-                        final dynamic rawData =
-                            _summarizedContent[selectedEmail['id']];
-
-                        // 데이터가 Map일 경우 내부 값을 추출하고, 아니면 null 처리
-                        // final Map<String, dynamic>? analysisMap =
-                        //     (rawData is Map<String, dynamic>) ? rawData : null;
-                        // final String? extractedSummary = analysisMap != null
-                        //     ? analysisMap['summary']
-                        //     : rawData?.toString();
-                        // final String? extractedMessageId = analysisMap != null
-                        //     ? analysisMap['message_id']
-                        //     : null;
-
-                        return EmailDetailScreen(
-                          email: selectedEmail,
-                          summary: rawData,
-                          messageIdFromGemini: (rawData is Map)
-                              ? rawData['message_id']
-                              : null,
-                          calendarCard: _buildCalendarEventCard(
-                            _extractedEventData[selectedEmail['id']],
-                          ),
-                          onRefresh: () async {
+                          if (isMobile) {
                             showDialog(
                               context: context,
                               barrierDismissible: false,
                               builder: (context) => const Center(
-                                child: CircularProgressIndicator(),
+                                child: CircularProgressIndicator(
+                                  color: Colors.white,
+                                ),
                               ),
                             );
+                          }
 
-                            await _summarizeEmail(
-                              selectedEmail,
-                              forceRefresh: true,
-                            );
+                          setState(() {
+                            _selectedEmail = selectedEmailMap;
+                            _isMobileDetailOpen = true;
+                            if (!_readIds.contains(email.id))
+                              _readIds.add(email.id);
+                          });
 
-                            if (context.mounted) Navigator.of(context).pop();
+                          _markAsRead(email.id);
 
-                            if (context.mounted) {
-                              // 새로고침 후 다시 그릴 때도 동일한 로직 적용
-                              final dynamic freshRawData =
-                                  _summarizedContent[selectedEmail['id']];
-                              // final Map<String, dynamic>? freshMap =
-                              //     (freshRawData is Map<String, dynamic>)
-                              //     ? freshRawData
-                              //     : null;
-
-                              Navigator.pushReplacement(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (context) => EmailDetailScreen(
-                                    email: selectedEmail,
-                                    summary: freshRawData,
-                                    messageIdFromGemini: (freshRawData is Map)
-                                        ? freshRawData['message_id']
-                                        : null,
-                                    calendarCard: _buildCalendarEventCard(
-                                      _extractedEventData[selectedEmail['id']],
-                                    ),
-                                    onRefresh: () {},
+                          if (isMobile) {
+                            await _summarizeEmail(selectedEmailMap);
+                            if (!mounted) return;
+                            Navigator.of(context, rootNavigator: true).pop();
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => EmailDetailScreen(
+                                  email: selectedEmailMap,
+                                  // summary:
+                                  //     _summarizedContent[selectedEmailMap['id']] ??
+                                  //     _summarizedContent,
+                                  summarizedContent: _summarizedContent,
+                                  calendarCard: _buildCalendarEventCard(
+                                    _extractedEventData[selectedEmailMap['id']], // email.id 대신 실제 Map의 id 사용
                                   ),
+                                  // ✅ [추가] AI 프롬프트 관련 데이터 전달
+                                  customPrompt: _customPrompt,
+                                  galleryPrompt: _galleryPrompt,
+                                  selectedPromptType: _selectedPromptType,
+                                  nickname: _currentUserModel?.nickname,
+
+                                  // ✅ [추가] 상세창에서 프롬프트 저장 시 실행될 로직
+                                  onSave: (newCustom, newGallery, newType) {
+                                    setState(() {
+                                      _customPrompt = newCustom;
+                                      _galleryPrompt = newGallery;
+                                      _selectedPromptType = newType;
+                                      _lastPromptUpdateTime =
+                                          DateTime.now(); // 시간차 오류 방지용
+                                      _summarizedContent.clear(); // 캐시 초기화
+                                    });
+                                  },
+
+                                  onRefresh: () async {
+                                    await _summarizeEmail(
+                                      selectedEmailMap,
+                                      forceRefresh: true,
+                                    );
+                                    if (mounted) setState(() {});
+                                  },
                                 ),
-                              );
-                            }
-                          },
-                        );
+                              ),
+                            ).then((result) {
+                              if (mounted) {
+                                setState(() {
+                                  _isMobileDetailOpen = false;
+                                });
+                                if (result == "deleted") _updateUI();
+                              }
+                            });
+                          } else {
+                            _summarizeEmail(selectedEmailMap);
+                          }
+                        }
                       },
-                    ),
-                  ).then((_) {
-                    setState(() {
-                      _isMobileDetailOpen =
-                          false; // 상세창 상태만 해제 (선택된 메일 강조는 유지됨)
-                    });
-                  });
-                } else {
-                  _summarizeEmail(selectedEmail, forceRefresh: false);
-                }
-              } catch (e) {
-                if (isMobile && mounted)
-                  Navigator.of(context, rootNavigator: true).pop();
-                debugPrint("메일 선택 중 에러 발생: $e");
-              }
-            },
-            onLongPress: () => _showWhiteListDialog(context, from),
-          );
-        },
-      ),
+                      onLongPress: () {
+                        _showWhiteListDialog(context, email.sender);
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -1486,7 +2170,7 @@ Body: ${email['body']}
 
   // 4. 화이트리스트 팝업 (기존 로직 보존)
   void _showWhiteListDialog(BuildContext context, String from) {
-    if (_whiteList.length >= 10) {
+    if (_whiteList.length >= 30) {
       showDialog(
         context: context,
         builder: (context) => AlertDialog(
@@ -1494,7 +2178,7 @@ Body: ${email['body']}
             "알림",
             style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
           ),
-          content: const Text("베타 테스트 기간에는 발신 주소를 최대 10개까지 등록 가능합니다. 🐱"),
+          content: const Text("베타 테스트 기간에는 발신 주소를 최대 30개까지 등록 가능합니다. 🐱"),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
@@ -1555,6 +2239,86 @@ Body: ${email['body']}
     );
   }
 
+  // [1] 삭제 확인 팝업창
+  void _showBulkDeleteDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("메일 삭제"),
+        content: Text("선택한 ${_selectedMailIds.length}개의 메일을 삭제하시겠습니까?"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context), // 취소
+            child: const Text("취소"),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(context); // 확인 팝업 닫기
+              await _performBulkDelete(); // 실제 삭제 로직 실행
+            },
+            child: const Text("삭제", style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // [2] 실제 삭제 처리 로직
+  Future<void> _performBulkDelete() async {
+    // 1. 로딩 인디케이터 표시
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) =>
+          const Center(child: CircularProgressIndicator(color: Colors.white)),
+    );
+
+    try {
+      debugPrint("🗑️ 로컬 저장소 삭제 시작: $_selectedMailIds");
+
+      // 2. ⭐ 핵심: 선택된 모든 ID를 로컬 저장소(MailCacheManager)에서 삭제
+      for (String id in _selectedMailIds) {
+        await MailCacheManager.deleteMail(id);
+      }
+
+      // 3. UI 업데이트
+      setState(() {
+        // 전체 메일 리스트에서 제거
+        _displayEmails.removeWhere(
+          (email) => _selectedMailIds.contains(email.id),
+        );
+
+        // 필터링된 리스트에서도 제거
+        _filteredEmails.removeWhere(
+          (email) => _selectedMailIds.contains(email.id),
+        );
+
+        // 선택 상태 초기화 및 모드 종료
+        _selectedMailIds.clear();
+        _isSelectionMode = false;
+      });
+
+      if (mounted) {
+        Navigator.pop(context); // 로딩 창 닫기
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("선택한 메일이 캐시에서 삭제되었습니다."),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) Navigator.pop(context); // 로딩 창 닫기
+      debugPrint("삭제 실패: $e");
+
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("삭제 중 오류가 발생했습니다: $e")));
+      }
+    }
+  }
+
   // 헬퍼 함수 수정
 
   String _formatDate(DateTime dt) {
@@ -1563,6 +2327,119 @@ Body: ${email['body']}
     String hour = dt.hour.toString().padLeft(2, '0');
     String minute = dt.minute.toString().padLeft(2, '0');
     return "${dt.year}/$month/$day $hour:$minute";
+  }
+
+  Widget _buildListWithHUD(BuildContext context, {required bool isWeb}) {
+    return Stack(
+      alignment: Alignment.center, // 중앙 정렬을 위해 추가
+      children: [
+        // 1. 실제 이메일 리스트
+        _buildMainEmailList(),
+
+        // 2. 공통 스크롤 버튼과 사용안내 버튼을 묶어서 표시
+        if (_showScrollHUD)
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // 상하 화살표 HUD
+              _buildCommonScrollHUD(isWeb: isWeb, scroll: _scrollController),
+
+              // 모바일에서만 화살표 아래에 '사용안내' 버튼 표시
+              if (!isWeb) ...[
+                const SizedBox(height: 16),
+                _buildManualButton(context),
+              ],
+            ],
+          ),
+      ],
+    );
+  }
+
+  Widget _buildCommonScrollHUD({
+    required bool isWeb,
+    required ScrollController scroll,
+  }) {
+    // <--- 여기 scroll 추가
+    return Center(
+      child: Container(
+        padding: EdgeInsets.symmetric(vertical: isWeb ? 10 : 8, horizontal: 6),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(isWeb ? 0.5 : 0.8),
+          borderRadius: BorderRadius.circular(15),
+          border: Border.all(color: Colors.black.withOpacity(0.1)),
+          boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 10)],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: const Icon(
+                Icons.vertical_align_top,
+                color: Colors.blueAccent,
+                size: 28,
+              ),
+              onPressed: () => scroll.animateTo(
+                // <--- _scrollController 대신 scroll 사용
+                0,
+                duration: const Duration(milliseconds: 500),
+                curve: Curves.easeInOut,
+              ),
+            ),
+            const SizedBox(height: 8),
+            IconButton(
+              icon: const Icon(
+                Icons.vertical_align_bottom,
+                color: Colors.blueAccent,
+                size: 28,
+              ),
+              onPressed: () => scroll.animateTo(
+                // <--- _scrollController 대신 scroll 사용
+                scroll.position.maxScrollExtent,
+                duration: const Duration(milliseconds: 500),
+                curve: Curves.easeInOut,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildManualButton(BuildContext context) {
+    return GestureDetector(
+      onTap: () => ManualManager.showUserManual(context),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Colors.indigoAccent, Colors.blueAccent.shade700],
+          ),
+          borderRadius: BorderRadius.circular(30),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.indigoAccent.withOpacity(0.4),
+              blurRadius: 8,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: const [
+            Icon(Icons.help_outline_rounded, color: Colors.white, size: 20),
+            SizedBox(width: 8),
+            Text(
+              "사용안내",
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
