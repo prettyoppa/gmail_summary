@@ -61,21 +61,21 @@ class DefaultFirebaseOptions {
   );
 
   // dev 프로젝트 firebase 설정 ;
-//   static const FirebaseOptions web = FirebaseOptions(
-//     apiKey: 'AIzaSyDFKJ_TU786HeBV1ZzmoG6GGKD3FW2c0B8',
-//     appId: '1:877541084240:web:5966a6754fa5f376d59555',
-//     messagingSenderId: '877541084240',
-//     projectId: 'ireadschool-dev',
-//     authDomain: 'ireadschool-dev.firebaseapp.com',
-//     storageBucket: 'ireadschool-dev.firebasestorage.app',
-//     measurementId: 'G-TJBNMD02FH',
-//   );
+  //   static const FirebaseOptions web = FirebaseOptions(
+  //     apiKey: 'AIzaSyDFKJ_TU786HeBV1ZzmoG6GGKD3FW2c0B8',
+  //     appId: '1:877541084240:web:5966a6754fa5f376d59555',
+  //     messagingSenderId: '877541084240',
+  //     projectId: 'ireadschool-dev',
+  //     authDomain: 'ireadschool-dev.firebaseapp.com',
+  //     storageBucket: 'ireadschool-dev.firebasestorage.app',
+  //     measurementId: 'G-TJBNMD02FH',
+  //   );
 
-//   static const FirebaseOptions android = FirebaseOptions(
-//     apiKey: 'AIzaSyDFKJ_TU786HeBV1ZzmoG6GGKD3FW2c0B8',
-//     appId: '1:877541084240:web:5966a6754fa5f376d59555',
-//     messagingSenderId: '877541084240',
-//     projectId: 'ireadschool-dev',
-//     storageBucket: 'ireadschool-dev.firebasestorage.app',
-//   );
-// }
+  //   static const FirebaseOptions android = FirebaseOptions(
+  //     apiKey: 'AIzaSyDFKJ_TU786HeBV1ZzmoG6GGKD3FW2c0B8',
+  //     appId: '1:877541084240:web:5966a6754fa5f376d59555',
+  //     messagingSenderId: '877541084240',
+  //     projectId: 'ireadschool-dev',
+  //     storageBucket: 'ireadschool-dev.firebasestorage.app',
+  //   );
+}
