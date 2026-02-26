@@ -588,10 +588,29 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       ];
 
       // 5. DB 저장
-      await MailCacheManager.saveMails(allServerMails);
-      await MailCacheManager.saveLastSyncTime('gmail', now);
-      await MailCacheManager.saveLastSyncTime('naver', now);
-      await MailCacheManager.saveLastSyncTime('daum', now);
+      if (allServerMails.isNotEmpty) {
+        // 데이터가 있을 때만 DB에 저장하고 마지막 동기화 시간을 '지금'으로 업데이트함
+        await MailCacheManager.saveMails(allServerMails);
+        await MailCacheManager.saveLastSyncTime('gmail', now);
+        await MailCacheManager.saveLastSyncTime('naver', now);
+        await MailCacheManager.saveLastSyncTime('daum', now);
+        debugPrint("✅ ${allServerMails.length}건의 새 메일을 저장하고 동기화 시간을 갱신했습니다.");
+      } else {
+        // 가져온 데이터가 0건일 때
+        final existingMails = await MailCacheManager.getAllMails();
+        if (existingMails.isEmpty) {
+          // DB 자체가 비어있는데 서버에서도 0건이 왔다면?
+          // 동기화 시간을 저장하지 않음 -> 다음 실행 시 다시 90일치를 시도하게 됨
+          debugPrint("⚠️ 데이터가 없고 서버 응답도 0건입니다. 동기화 시간을 갱신하지 않습니다.");
+        } else {
+          // 기존 데이터는 있는데 새로 온 것만 0건이라면?
+          // 이건 정상적인 상황이므로 동기화 시간을 갱신하여 중복 체크를 방지함
+          await MailCacheManager.saveLastSyncTime('gmail', now);
+          await MailCacheManager.saveLastSyncTime('naver', now);
+          await MailCacheManager.saveLastSyncTime('daum', now);
+          debugPrint("ℹ️ 새로운 메일이 없습니다. 동기화 시간만 갱신합니다.");
+        }
+      }
 
       // 6. [알림바 제거] 백그라운드 여부 상관없이 즉시 UI 갱신
       _updateUI();

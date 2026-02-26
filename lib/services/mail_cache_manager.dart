@@ -22,6 +22,12 @@ class MailCacheManager {
     debugPrint("✅ Hive Box Open 완료 (Mail, Deleted, Settings)");
   }
 
+  static Future<List<IntegratedMail>> getAllMails() async {
+    final box = Hive.box<IntegratedMail>(_mailBoxName);
+    // 박스에 담긴 모든 value를 리스트로 반환합니다.
+    return box.values.toList();
+  }
+
   // 2. 메일 저장 (중복 제거, 과거 일정 필터링, 1,000개 유지)
   static Future<void> saveMails(List<IntegratedMail> newMails) async {
     final box = Hive.box<IntegratedMail>(_mailBoxName);
