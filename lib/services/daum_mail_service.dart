@@ -1,11 +1,26 @@
+import 'dart:convert';
 import 'package:enough_mail/enough_mail.dart';
-
 import '../models/integrated_mail.dart';
+import 'package:cp949_codec/cp949_codec.dart';
+// import 'package:flutter/foundation.dart';
 
 class DaumMailService {
   final String _imapServerHost = 'imap.daum.net';
   final int _imapServerPort = 993;
   final bool _isSecure = true;
+
+  // ✅ [추가] 로그인 정보를 저장할 변수
+  String? _userName;
+  String? _password;
+
+  // ✅ [추가] 연동 여부를 확인하는 Getter
+  bool get isConnected => _userName != null && _password != null;
+
+  // ✅ [추가] 로그인 정보를 설정하는 메서드 (연동 성공 시 호출용)
+  void setCredentials(String id, String pw) {
+    _userName = id;
+    _password = pw;
+  }
 
   Future<bool> checkConnection({
     required String userName,
@@ -19,10 +34,83 @@ class DaumMailService {
         isSecure: _isSecure,
       );
       await client.login(userName, password);
+      // ✅ [추가] 연결 성공 시 내부 변수에 저장
+      _userName = userName;
+      _password = password;
       return true;
     } finally {
       if (client.isLoggedIn) await client.logout();
     }
+  }
+
+  // ---------------------------------------------------------
+  // ✅ [최종 에러 해결] 문제 되는 메서드를 제거한 안전한 디코더
+  // ---------------------------------------------------------
+  String _decodeDaumSubject(MimeMessage message) {
+    String? rawSubject = message.getHeaderValue('Subject');
+    if (rawSubject == null || rawSubject.isEmpty) {
+      return message.decodeSubject() ?? '(제목 없음)';
+    }
+
+    if (rawSubject.contains('=?')) {
+      try {
+        // 대소문자 구분 없이 매칭하기 위해 i 옵션을 뺄 수도 있지만,
+        // 확실하게 그룹 데이터를 가져온 뒤 toUpperCase()로 비교합니다.
+        final mimeRegex = RegExp(r'=\?([^?]+)\?([bBqQ])\?([^?]+)\?=');
+
+        return rawSubject
+            .splitMapJoin(
+              mimeRegex,
+              onMatch: (Match m) {
+                final String charset = m.group(1)!.toLowerCase();
+                final String encoding = m
+                    .group(2)!
+                    .toUpperCase(); // ✅ 여기서 대문자로 통일!
+                final String data = m.group(3)!;
+
+                try {
+                  List<int> bytes;
+                  if (encoding == 'B') {
+                    // Base64 처리 (이제 'b', 'B' 모두 여기로 옵니다)
+                    bytes = base64.decode(data);
+                  } else if (encoding == 'Q') {
+                    // Quoted-Printable 처리 (이제 'q', 'Q' 모두 여기로 옵니다)
+                    String decodedStr = data.replaceAll('_', ' ');
+                    List<int> resultBytes = [];
+                    for (int i = 0; i < decodedStr.length; i++) {
+                      if (decodedStr[i] == '=' && i + 2 < decodedStr.length) {
+                        final hex = decodedStr.substring(i + 1, i + 3);
+                        resultBytes.add(int.parse(hex, radix: 16));
+                        i += 2;
+                      } else {
+                        resultBytes.add(decodedStr.codeUnitAt(i));
+                      }
+                    }
+                    bytes = resultBytes;
+                  } else {
+                    return m.group(0)!;
+                  }
+
+                  // charset 판별 및 디코딩
+                  if (charset.contains('euc-kr') ||
+                      charset.contains('cp949') ||
+                      charset.contains('ks_c_5601')) {
+                    return cp949.decode(bytes);
+                  }
+                  return utf8.decode(bytes, allowMalformed: true);
+                } catch (_) {
+                  return m.group(0)!;
+                }
+              },
+              onNonMatch: (n) => n,
+            )
+            .replaceAll('\r', '')
+            .replaceAll('\n', '');
+      } catch (e) {
+        return message.decodeSubject() ?? rawSubject;
+      }
+    }
+    return message.decodeSubject() ?? rawSubject;
   }
 
   Future<List<IntegratedMail>> fetchEmails({
@@ -160,7 +248,7 @@ class DaumMailService {
               IntegratedMail(
                 source: MailSource.daum,
                 id: 'daum_$daumOriginalId',
-                subject: message.decodeSubject() ?? '(제목 없음)',
+                subject: _decodeDaumSubject(message),
                 sender: sender,
                 dateTime: emailDate,
                 body: bodyText ?? '',

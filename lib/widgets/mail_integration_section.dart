@@ -6,7 +6,9 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class MailIntegrationSection extends StatefulWidget {
-  const MailIntegrationSection({Key? key}) : super(key: key);
+  final VoidCallback? onRefreshRequired;
+  const MailIntegrationSection({Key? key, this.onRefreshRequired})
+    : super(key: key);
 
   @override
   _MailIntegrationSectionState createState() => _MailIntegrationSectionState();
@@ -98,6 +100,9 @@ class _MailIntegrationSectionState extends State<MailIntegrationSection> {
       if (!mounted) return;
       Navigator.pop(context); // 로딩 닫기
       _showSuccessDialog("네이버");
+      if (widget.onRefreshRequired != null) {
+        widget.onRefreshRequired!();
+      }
     } catch (e) {
       _handleError("네이버", e);
     }
@@ -130,6 +135,9 @@ class _MailIntegrationSectionState extends State<MailIntegrationSection> {
       if (!mounted) return;
       Navigator.pop(context); // 로딩 닫기
       _showSuccessDialog("다음");
+      if (widget.onRefreshRequired != null) {
+        widget.onRefreshRequired!();
+      }
     } catch (e) {
       _handleError("다음", e);
     }

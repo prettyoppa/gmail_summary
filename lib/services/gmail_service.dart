@@ -15,28 +15,28 @@ class GmailService {
 
     var gmailApi = gmail.GmailApi(httpClient);
 
-    // 1. 모든 메시지 참조(ID)를 담을 리스트
     List<gmail.Message> allMessageRefs = [];
     String? pageToken;
 
     try {
-      // 2. 페이지네이션: 다음 페이지 토큰이 있을 때까지 반복해서 목록 조회
+      // 1. 메시지 목록(ID) 조회
       do {
+        debugPrint("🚀 Gmail API 요청 시작 (pageToken: $pageToken)");
         var results = await gmailApi.users.messages.list(
           'me',
           q: query,
-          maxResults: 500, // 구글 API의 실제 최대 한계치
+          maxResults: 500,
           pageToken: pageToken,
         );
 
         if (results.messages != null) {
           allMessageRefs.addAll(results.messages!);
-          debugPrint("📩 Gmail 목록 수집 중... 현재 ${allMessageRefs.length}건 확보");
+          debugPrint(
+            "📩 현재 페이지에서 ${results.messages!.length}건 추가됨. (총 ${allMessageRefs.length}건)",
+          );
         }
 
         pageToken = results.nextPageToken;
-
-        // 최대 1500건까지만 가져오도록 제한 (필요시 조절 가능)
       } while (pageToken != null && allMessageRefs.length < 1500);
     } catch (e) {
       debugPrint("🚨 Gmail 목록 조회 에러: $e");
@@ -44,53 +44,65 @@ class GmailService {
 
     List<IntegratedMail> fetched = [];
 
-    // 3. 수집된 모든 ID에 대해 상세 정보 가져오기
+    // 2. 수집된 ID들에 대해 10개씩 묶어서 상세 정보 수집 (429 에러 방지)
     if (allMessageRefs.isNotEmpty) {
-      for (var msg in allMessageRefs) {
-        try {
-          var detail = await gmailApi.users.messages.get(
-            'me',
-            msg.id!,
-            format: 'full',
-          );
+      for (int i = 0; i < allMessageRefs.length; i += 50) {
+        // 💡 10 -> 50으로 상향
+        int end = (i + 50 < allMessageRefs.length)
+            ? i + 50
+            : allMessageRefs.length;
+        final chunk = allMessageRefs.sublist(i, end);
 
-          final String? threadId = detail.threadId;
-          String subject = "";
-          String from = "";
+        debugPrint("⏳ Gmail 상세 조회 중... ($i / ${allMessageRefs.length})");
 
-          detail.payload?.headers?.forEach((h) {
-            if (h.name?.toLowerCase() == 'subject') subject = h.value ?? "";
-            if (h.name?.toLowerCase() == 'from') from = h.value ?? "";
-          });
+        final List<IntegratedMail?> chunkResults = await Future.wait(
+          chunk.map((msg) async {
+            try {
+              var detail = await gmailApi.users.messages.get(
+                'me',
+                msg.id!,
+                format: 'full',
+              );
 
-          DateTime emailDate = DateTime.fromMillisecondsSinceEpoch(
-            int.parse(detail.internalDate!),
-          ).toLocal();
+              String subject = "";
+              String from = "";
 
-          fetched.add(
-            IntegratedMail(
-              source: MailSource.gmail,
-              id: msg.id ?? '',
-              threadId: threadId,
-              subject: subject,
-              sender: from,
-              dateTime: emailDate,
-              body: _extractBody(detail.payload!),
-              isRead: !(detail.labelIds?.contains('UNREAD') ?? false),
-            ),
-          );
+              detail.payload?.headers?.forEach((h) {
+                if (h.name?.toLowerCase() == 'subject') subject = h.value ?? "";
+                if (h.name?.toLowerCase() == 'from') from = h.value ?? "";
+              });
 
-          // 상세 정보를 가져온 결과도 1500건이 넘지 않도록 안전장치
-          if (fetched.length >= 1500) break;
-        } catch (e) {
-          debugPrint("🚨 Gmail 상세 조회 에러 (ID: ${msg.id}): $e");
-          continue; // 한 건 실패해도 다음 메일로 진행
-        }
+              DateTime emailDate = DateTime.fromMillisecondsSinceEpoch(
+                int.parse(detail.internalDate!),
+              ).toLocal();
+
+              return IntegratedMail(
+                source: MailSource.gmail,
+                id: msg.id ?? '',
+                threadId: detail.threadId,
+                subject: subject,
+                sender: from,
+                dateTime: emailDate,
+                body: _extractBody(detail.payload!),
+                isRead: !(detail.labelIds?.contains('UNREAD') ?? false),
+              );
+            } catch (e) {
+              debugPrint("🚨 Gmail 상세 조회 에러 (ID: ${msg.id}): $e");
+              return null;
+            }
+          }),
+        );
+
+        // null이 아닌 결과만 리스트에 추가
+        fetched.addAll(chunkResults.whereType<IntegratedMail>());
+
+        // API 할당량 보호를 위한 미세 지연
+        await Future.delayed(const Duration(milliseconds: 150));
       }
     }
 
     debugPrint("✅ Gmail 최종 수집 완료: ${fetched.length}건");
-    return fetched;
+    return fetched; // 👈 이 반환문이 반드시 있어야 합니다.
   }
 
   String _extractBody(gmail.MessagePart part) {

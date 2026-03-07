@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'calendar_range_picker.dart';
 
 class FilterDrawer extends StatefulWidget {
   final List<String> whiteList;
@@ -8,7 +9,8 @@ class FilterDrawer extends StatefulWidget {
   final String? galleryPrompt;
   final DateTimeRange? selectedDateRange;
   final int selectedPromptType;
-  final Function(List<String>, String, String?, DateTimeRange?, int) onSave;
+  final Function(List<String>, String, String?, DateTimeRange?, int, bool)
+  onSave;
   final bool isFilterEnabled;
   final Function(bool) onFilterModeChanged;
   final bool isProfileRegistered;
@@ -35,41 +37,31 @@ class FilterDrawer extends StatefulWidget {
 class _FilterDrawerState extends State<FilterDrawer> {
   DateTimeRange? _localDateRange;
   late TextEditingController _controller;
-  // late TextEditingController _promptController;
   late List<String> _localWhiteList;
-
   late bool _localFilterEnabled;
   bool _isSearchVisible = false;
   String _searchQuery = "";
-
-  // late String _galleryPrompt; // 갤러리에서 가져온 프롬프트 저장용
-  // int _selectedPromptTab = 0; // 기본값을 0(사용자 프롬프트 1)으로 설정
 
   @override
   void initState() {
     super.initState();
     _localFilterEnabled = widget.isFilterEnabled;
     _controller = TextEditingController();
-    // _promptController = TextEditingController(text: widget.customPrompt);
-    // _promptController = TextEditingController();
     _localWhiteList = List.from(widget.whiteList);
-    // _galleryPrompt = widget.galleryPrompt ?? "";
-    // _selectedPromptTab = widget.selectedPromptType;
 
     // --- 초기 날짜 로직 적용 ---
-    // From은 전달받은 값(없으면 7일 전), To는 무조건 오늘(현재 시각)
     DateTime now = DateTime.now();
-    // 오늘로부터 딱 3개월 전 (제한선)
-    DateTime threeMonthsAgo = DateTime(now.year, now.month - 3, now.day);
+    // 제한선을 3개월에서 1개월(31일)로 변경
+    DateTime oneMonthAgo = DateTime(now.year, now.month, now.day - 31);
 
-    // From 기본값 설정 (전달받은 값 없으면 7일 전)
+    // From 기본값 설정 (전달받은 값 없으면 30일 전)
     DateTime fromDate =
         widget.selectedDateRange?.start ??
-        now.subtract(const Duration(days: 7));
+        now.subtract(const Duration(days: 30));
 
-    // [중요] 혹시라도 전달받은 날짜가 3개월보다 더 이전이면 3개월 전으로 맞춤 (에러 방지)
-    if (fromDate.isBefore(threeMonthsAgo)) {
-      fromDate = threeMonthsAgo;
+    // 1개월 제한 적용
+    if (fromDate.isBefore(oneMonthAgo)) {
+      fromDate = oneMonthAgo;
     }
 
     _localDateRange = DateTimeRange(start: fromDate, end: now);
@@ -78,7 +70,6 @@ class _FilterDrawerState extends State<FilterDrawer> {
   @override
   void dispose() {
     _controller.dispose();
-    // _promptController.dispose();
     super.dispose();
   }
 
@@ -172,8 +163,6 @@ class _FilterDrawerState extends State<FilterDrawer> {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    // AI 기능을 제거했으므로 Firestore에는 기존 widget에 있던 값을 그대로 유지하거나
-    // 기본값을 저장하도록 설정합니다.
     try {
       // 1. Firestore 업데이트 (AI 관련 값은 기존 값을 유지하거나 기본값 0 설정)
       await FirebaseFirestore.instance.collection('users').doc(user.uid).update(
@@ -182,20 +171,42 @@ class _FilterDrawerState extends State<FilterDrawer> {
           'customPrompt': widget.customPrompt, // 기존 값 유지
           'galleryPrompt': widget.galleryPrompt, // 기존 값 유지
           'selectedPromptType': 0, // 기본 타입 0으로 고정
+          'filterOn': _localFilterEnabled, // ✅ 추가된 filterOn 필드 저장
+          'startDate': _localDateRange != null
+              ? Timestamp.fromDate(_localDateRange!.start)
+              : null,
+          'endDate': _localDateRange != null
+              ? Timestamp.fromDate(_localDateRange!.end)
+              : null,
         },
       );
 
-      // 2. main.dart 메모리 동기화 (onSave 호출)
-      // 변수가 삭제되었으므로, 해당 자리에는 widget이 가진 기존값이나 기본값을 넣어줍니다.
       widget.onSave(
         _localWhiteList, // 업데이트된 화이트리스트
         widget.customPrompt, // 기존 프롬프트 값 전달
         widget.galleryPrompt, // 기존 갤러리 값 전달
         _localDateRange, // 업데이트된 날짜 범위
         0, // 선택된 탭 (기본값 0)
+        _localFilterEnabled,
       );
     } catch (e) {
       debugPrint("저장 오류: $e");
+    }
+  }
+
+  // ✅ 별도 파일의 달력 위젯 호출
+  Future<void> _selectDateRange(BuildContext context) async {
+    final DateTimeRange? picked = await CalendarRangePicker.show(
+      context,
+      initialRange: _localDateRange,
+      onReSync: () {}, // 필터창에서는 재수집 기능을 쓰지 않거나 필요시 로직 추가
+      showReSync: false,
+    );
+
+    if (picked != null) {
+      setState(() {
+        _localDateRange = picked;
+      });
     }
   }
 
@@ -269,8 +280,8 @@ class _FilterDrawerState extends State<FilterDrawer> {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         _buildQuickDateButton("1주일", const Duration(days: 7)),
+                        _buildQuickDateButton("2주일", const Duration(days: 14)),
                         _buildQuickDateButton("1개월", const Duration(days: 30)),
-                        _buildQuickDateButton("3개월", const Duration(days: 90)),
                         _buildDirectInputButton("직접입력"),
                       ],
                     ),
@@ -313,10 +324,7 @@ class _FilterDrawerState extends State<FilterDrawer> {
                 ),
               ),
               onPressed: () {
-                if (!widget.isProfileRegistered) {
-                  _showSimpleAlert("알림", "사용자 프로파일을 먼저 등록해 주시기 바랍니다.");
-                  return;
-                }
+                // ✅ 1단계 작업 결과 반영: 프로필 등록 여부와 상관없이 저장 가능하도록 수정 가능 (현재는 유지)
                 _finalSaveWithBackup();
                 Navigator.pop(context);
               },
@@ -460,7 +468,7 @@ class _FilterDrawerState extends State<FilterDrawer> {
     String input = _controller.text.trim();
     if (input.isEmpty) return;
     if (_localWhiteList.length >= 30) {
-      _showSimpleAlert("알림", "베타 테스트 기간에는 최대 30개까지 등록 가능합니다. 🐱");
+      _showSimpleAlert("알림", "최대 30개까지 등록 가능합니다. 🐱");
       return;
     }
     if (!input.contains('@')) input = "@$input";
@@ -487,14 +495,12 @@ class _FilterDrawerState extends State<FilterDrawer> {
               borderRadius: BorderRadius.circular(8),
             ),
           ),
-          onPressed: () {
-            setState(() {
-              _localDateRange = DateTimeRange(
-                start: DateTime.now().subtract(duration),
-                end: DateTime.now(),
-              );
-            });
-          },
+          onPressed: () => setState(() {
+            _localDateRange = DateTimeRange(
+              start: DateTime.now().subtract(duration),
+              end: DateTime.now(),
+            );
+          }),
           child: Text(
             label,
             style: const TextStyle(fontSize: 12, color: Colors.black87),
@@ -554,157 +560,6 @@ class _FilterDrawerState extends State<FilterDrawer> {
           ),
         ),
       ),
-    );
-  }
-
-  Future<void> _selectDateRange(BuildContext context) async {
-    // 내부 상태 관리를 위한 임시 변수
-    DateTime? start = _localDateRange?.start;
-    DateTime? end = _localDateRange?.end;
-    // --- 3개월 제한 날짜 계산 ---
-    DateTime now = DateTime.now();
-    DateTime threeMonthsAgo = DateTime(now.year, now.month - 3, now.day);
-
-    await showDialog(
-      context: context,
-      builder: (context) {
-        return Dialog(
-          backgroundColor: Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: StatefulBuilder(
-            builder: (context, setDialogState) {
-              return Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // 1. 상단 헤더: 작고 얇은 날짜 (사용자님 선호 스타일)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                      vertical: 20,
-                      horizontal: 16,
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        GestureDetector(
-                          onTap: () => Navigator.pop(context),
-                          child: const Icon(
-                            Icons.close,
-                            size: 22,
-                            color: Colors.black54,
-                          ),
-                        ),
-                        Text(
-                          start == null || end == null
-                              ? "조회 기간을 선택하세요"
-                              : "${_formatDate(start)} ~ ${_formatDate(end)}",
-                          style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w400, // 얇은 굵기
-                            color: Colors.black87,
-                          ),
-                        ),
-                        const SizedBox(width: 22),
-                      ],
-                    ),
-                  ),
-                  const Divider(height: 1),
-
-                  // 2. 달력 본체: 검정색 날짜 보장 (좌우 이동 방식)
-                  Theme(
-                    data: ThemeData.light().copyWith(
-                      colorScheme: const ColorScheme.light(
-                        primary: Colors.blue, // 선택 시 동그라미 색상
-                        onSurface: Colors.black87, // ★ 날짜 숫자 검정색 강제
-                      ),
-                    ),
-                    child: SizedBox(
-                      height: 320,
-                      child: CalendarDatePicker(
-                        initialDate: start ?? DateTime.now(),
-                        // -------------------------------------------------------
-                        // ★ 수정: 3개월 전까지만 달력 이동 가능하도록 제한
-                        firstDate: threeMonthsAgo,
-                        // ★ 수정: 오늘 이후의 미래 날짜는 선택 불가
-                        lastDate: now,
-                        // -------------------------------------------------------
-                        onDateChanged: (date) {
-                          setDialogState(() {
-                            // 시작일/종료일 선택 로직
-                            if (start == null ||
-                                (start != null && end != null)) {
-                              start = date;
-                              end = null;
-                            } else if (date.isBefore(start!)) {
-                              start = date;
-                            } else {
-                              end = date;
-                            }
-                          });
-                        },
-                      ),
-                    ),
-                  ),
-
-                  // 3. 하단 버튼
-                  Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: Column(
-                      children: [
-                        // ★ 베타 기간 안내 텍스트 추가
-                        const Text(
-                          "베타 테스트 기간에는 최근 3개월 내 메일만 조회 가능합니다. 🐱",
-                          style: TextStyle(
-                            fontSize: 10,
-                            color: Colors.blueAccent,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text(
-                              "시작일과 종료일을 각각 클릭하세요",
-                              style: TextStyle(
-                                fontSize: 10,
-                                color: Colors.grey,
-                              ),
-                            ),
-                            ElevatedButton(
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.blue,
-                                foregroundColor: Colors.white,
-                                elevation: 0,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                              ),
-                              onPressed: (start != null && end != null)
-                                  ? () {
-                                      setState(() {
-                                        _localDateRange = DateTimeRange(
-                                          start: start!,
-                                          end: end!,
-                                        );
-                                      });
-                                      Navigator.pop(context);
-                                    }
-                                  : null,
-                              child: const Text("확인"),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              );
-            },
-          ),
-        );
-      },
     );
   }
 }
