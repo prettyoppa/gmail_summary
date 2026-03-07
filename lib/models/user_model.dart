@@ -1,16 +1,17 @@
-// lib/models/user_model.dart
-
 class UserModel {
-  // 필수 항목
   String name;
   String birthday;
   String gender;
   String country;
 
-  // 선택 항목
   String englishName;
   String nickname;
   String address;
+
+  String? naverId;
+  String? naverPw;
+  String? daumId;
+  String? daumPw;
 
   UserModel({
     this.name = '',
@@ -20,19 +21,13 @@ class UserModel {
     this.englishName = '',
     this.nickname = '',
     this.address = '',
+    this.naverId,
+    this.naverPw,
+    this.daumId,
+    this.daumPw,
   });
 
-  factory UserModel.empty() {
-    return UserModel(
-      name: '',
-      birthday: '',
-      gender: '',
-      country: '',
-      englishName: '',
-      nickname: '',
-      address: '',
-    );
-  }
+  factory UserModel.empty() => UserModel();
 
   factory UserModel.fromMap(Map<String, dynamic> map) {
     return UserModel(
@@ -43,9 +38,14 @@ class UserModel {
       englishName: map['englishName'] ?? '',
       nickname: map['nickname'] ?? '',
       address: map['address'] ?? '',
+      // 💡 [추가] DB에서 가져올 때 매핑
+      naverId: map['naver_id'],
+      naverPw: map['naver_pw'],
+      daumId: map['daum_id'],
+      daumPw: map['daum_pw'],
     );
   }
-  // models/user_model.dart 내부 어딘가에 추가
+
   Map<String, dynamic> toMap() {
     return {
       'name': name,
@@ -55,6 +55,11 @@ class UserModel {
       'birthday': birthday,
       'country': country,
       'address': address,
+      // 💡 [추가] DB에 저장할 때 매핑
+      'naver_id': naverId,
+      'naver_pw': naverPw,
+      'daum_id': daumId,
+      'daum_pw': daumPw,
     };
   }
 }

@@ -6,6 +6,19 @@ class NaverMailService {
   final int _imapServerPort = 993;
   final bool _isSecure = true;
 
+  // ✅ [추가] 로그인 정보를 저장할 변수
+  String? _userName;
+  String? _password;
+
+  // ✅ [추가] 연동 여부를 확인하는 Getter
+  bool get isConnected => _userName != null && _password != null;
+
+  // ✅ [추가] 로그인 정보를 설정하는 메서드 (연동 성공 시 호출용)
+  void setCredentials(String id, String pw) {
+    _userName = id;
+    _password = pw;
+  }
+
   Future<bool> checkConnection({
     required String userName,
     required String password,
@@ -18,6 +31,9 @@ class NaverMailService {
         isSecure: _isSecure,
       );
       await client.login(userName, password);
+      // ✅ [추가] 연결 성공 시 내부 변수에 저장
+      _userName = userName;
+      _password = password;
       return true;
     } finally {
       if (client.isLoggedIn) await client.logout();

@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_firestore/cloud_firestore.dart'; //
 import 'package:markdown/markdown.dart' as md;
+import 'package:url_launcher/url_launcher.dart'; // ✅ 링크 실행용
 
 class ManualManager {
-  // 1. Firebase에서 매뉴얼 텍스트 가져오기
+  // 1. Firebase에서 매뉴얼 텍스트 가져오기 (이 부분이 사라져서 에러가 났던 것입니다)
   static Future<String> _fetchManualFromFirebase() async {
     try {
       print("LOG: 매뉴얼 불러오기 시작...");
@@ -15,7 +16,6 @@ class ManualManager {
 
       if (doc.exists) {
         print("LOG: 데이터 확인됨 -> ${doc.data()}");
-        // 콘솔에 입력하신 필드명이 'manual_content'가 맞는지 여기서 꼭 확인하세요!
         return doc.data()?['manual_content'] ?? "필드(manual_content)가 비어있습니다.";
       } else {
         print("LOG: 문서를 찾을 수 없습니다 (admin/guide)");
@@ -37,10 +37,8 @@ class ManualManager {
         borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
       ),
       builder: (context) {
-        // FutureBuilder를 사용하여 데이터를 비동기로 기다립니다.
-        // 이렇게 해야 데이터가 오지 않아도 다른 UI가 멈추지 않습니다.
         return FutureBuilder<String>(
-          future: _fetchManualFromFirebase(),
+          future: _fetchManualFromFirebase(), // ✅ 이제 이 메서드를 정상적으로 찾을 수 있습니다.
           builder: (context, snapshot) {
             if (snapshot.connectionState == ConnectionState.waiting) {
               return const SizedBox(
@@ -64,15 +62,12 @@ class ManualManager {
                     margin: const EdgeInsets.only(bottom: 20, top: 10),
                   ),
 
-                  Row(
+                  const Row(
                     children: [
-                      Icon(
-                        Icons.help_rounded,
-                        color: Colors.indigoAccent,
-                      ), // 버튼 아이콘과 통일감
+                      Icon(Icons.help_rounded, color: Colors.indigoAccent),
                       SizedBox(width: 8),
                       Text(
-                        "Catchy 사용 가이드",
+                        "AI 고양이 Catchy",
                         style: TextStyle(
                           fontSize: 20,
                           fontWeight: FontWeight.bold,
@@ -86,11 +81,29 @@ class ManualManager {
                   Expanded(
                     child: Markdown(
                       data: snapshot.data ?? "내용을 불러올 수 없습니다.",
-                      // 💡 이 부분을 수정했습니다.
-                      // gitHubWeb 설정은 HTML 태그 인라인 해석을 기본으로 포함합니다.
                       extensionSet: md.ExtensionSet.gitHubWeb,
+
+                      // ✅ 링크 클릭 시 브라우저나 유튜브 앱으로 연결
+                      onTapLink: (text, href, title) async {
+                        if (href != null) {
+                          final Uri url = Uri.parse(href);
+                          if (await canLaunchUrl(url)) {
+                            await launchUrl(
+                              url,
+                              mode: LaunchMode.externalApplication,
+                            );
+                          }
+                        }
+                      },
+
                       styleSheet: MarkdownStyleSheet(
                         p: const TextStyle(fontSize: 16, height: 1.5),
+                        // ✅ 링크 스타일: 파란색 + 밑줄로 클릭 가능함을 표시
+                        a: const TextStyle(
+                          color: Colors.blueAccent,
+                          decoration: TextDecoration.underline,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
                   ),
