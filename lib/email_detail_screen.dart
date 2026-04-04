@@ -4,6 +4,7 @@ import 'services/email_link_manager.dart';
 import 'widgets/analysis_guide_card.dart';
 import 'services/mail_cache_manager.dart';
 import 'widgets/ai_prompt_button.dart';
+import 'email_received_at_format.dart';
 
 class EmailDetailScreen extends StatefulWidget {
   final Map<String, dynamic> email;
@@ -127,6 +128,7 @@ $textToShare
 
   @override
   Widget build(BuildContext context) {
+    final receivedAt = formatEmailReceivedAt(widget.email);
     final mailId = widget.email['id'];
     final currentSummaryData = widget.summarizedContent[mailId];
     print("DEBUG: 현재 위젯이 가진 제목: ${widget.email['subject']}");
@@ -191,6 +193,13 @@ $textToShare
                       "From: ${widget.email['sender'] ?? widget.email['from'] ?? '알 수 없음'}",
                       style: TextStyle(color: Colors.grey[600], fontSize: 14),
                     ),
+                    if (receivedAt.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        "수신: $receivedAt",
+                        style: TextStyle(color: Colors.grey[600], fontSize: 14),
+                      ),
+                    ],
                     const Divider(height: 30),
 
                     // AI 요약 타이틀
@@ -249,9 +258,7 @@ $textToShare
         children: [
           FloatingActionButton.extended(
             heroTag: 'view_original_gmail',
-            // onPressed: () {
-            //   EmailLinkManager.openOriginalEmail(email: widget.email);
-            // },
+
             onPressed: () {
               // 1. 데이터 전체 구조 파악 (본문 제외하고 모든 키값 출력)
               final Map<String, dynamic> fullData = Map.from(widget.email);
@@ -333,12 +340,7 @@ $textToShare
         ),
       );
     }
-    // 1. widget.summary가 Map 전체라면 ID로 꺼내고, 아니라면 값 자체를 사용
-    // final dynamic currentSummary =
-    //     (widget.summary is Map &&
-    //         widget.summary.containsKey(widget.email['id']))
-    //     ? widget.summary[widget.email['id']]
-    //     : widget.summary;
+
     final mailId = widget.email['id'];
     final dynamic currentSummary = widget.summarizedContent[mailId];
     // 2. 에러 상황 처리 (onRefresh 규격 문제 해결)

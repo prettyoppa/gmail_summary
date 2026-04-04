@@ -3,6 +3,7 @@ import 'services/email_link_manager.dart';
 import 'services/mail_cache_manager.dart';
 import '/manual_manager.dart';
 import 'widgets/analysis_guide_card.dart';
+import 'email_received_at_format.dart';
 
 class WebEmailDetailView extends StatelessWidget {
   final Map<String, dynamic> email;
@@ -29,8 +30,8 @@ class WebEmailDetailView extends StatelessWidget {
   });
 
   @override
-  @override
   Widget build(BuildContext context) {
+    final String receivedAt = formatEmailReceivedAt(email);
     final String mailId = email['id'] ?? '';
     final dynamic currentAnalysis = summarizedContent[mailId];
     final dynamic currentEvent = extractedEventData[mailId];
@@ -58,9 +59,16 @@ class WebEmailDetailView extends StatelessWidget {
                     const SizedBox(height: 12),
                     // 발신자
                     Text(
-                      "발신: ${email['from']}",
+                      "발신: ${email['sender'] ?? email['from'] ?? '알 수 없음'}",
                       style: const TextStyle(color: Colors.grey, fontSize: 15),
                     ),
+                    if (receivedAt.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        "수신: $receivedAt",
+                        style: const TextStyle(color: Colors.grey, fontSize: 15),
+                      ),
+                    ],
                     const Divider(height: 50, thickness: 1),
 
                     // AI 요약 정보 타이틀
