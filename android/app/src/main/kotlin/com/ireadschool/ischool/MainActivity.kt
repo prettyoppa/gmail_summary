@@ -1,4 +1,4 @@
-package com.ireadschool.ischool.qas
+package com.ireadschool.ischool
 
 import io.flutter.embedding.android.FlutterActivity
 

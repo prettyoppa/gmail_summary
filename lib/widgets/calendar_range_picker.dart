@@ -49,46 +49,62 @@ class CalendarRangePicker extends StatelessWidget {
             ),
             dialogBackgroundColor: Colors.white,
           ),
-          child: Column(
-            children: [
-              const SizedBox(height: 50),
-              Expanded(child: child!),
-              // ✅ 버튼 텍스트와 로직을 1개월로 수정
-              if (showReSync)
-                Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: SizedBox(
-                    width: double.infinity,
-                    child: TextButton.icon(
-                      onPressed: () {
-                        Navigator.pop(context);
-                        onReSync();
-                      },
-                      icon: const Icon(
-                        Icons.sync,
-                        size: 16,
-                        color: Colors.redAccent,
-                      ),
-                      label: const Text(
-                        "최근 1개월치 이메일 서버 재수집",
-                        style: TextStyle(
-                          color: Colors.redAccent,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                          decoration: TextDecoration.underline,
-                        ),
-                      ),
-                      style: TextButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        backgroundColor: Colors.redAccent.withOpacity(0.05),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
+          child: Material(
+            // 배경색 유지를 위해 추가
+            color: Colors.white,
+            child: SingleChildScrollView(
+              // ✅ 화면이 작으면 스크롤 가능하게
+              child: Column(
+                mainAxisSize: MainAxisSize.min, // 콘텐츠 크기만큼만 차지
+                children: [
+                  const SizedBox(height: 20), // 상단 여백
+                  // 캘린더 본체
+                  ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight:
+                          MediaQuery.of(context).size.height * 0.7, // 캘린더 높이 제한
+                    ),
+                    child: child!,
+                  ),
+
+                  // ✅ 캘린더 바로 아래에 버튼 배치
+                  if (showReSync)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: TextButton.icon(
+                          onPressed: () {
+                            Navigator.pop(context);
+                            onReSync();
+                          },
+                          icon: const Icon(
+                            Icons.sync,
+                            size: 16,
+                            color: Colors.redAccent,
+                          ),
+                          label: const Text(
+                            "최근 1개월치 이메일 서버 재수집",
+                            style: TextStyle(
+                              color: Colors.redAccent,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                              decoration: TextDecoration.underline,
+                            ),
+                          ),
+                          style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            backgroundColor: Colors.redAccent.withOpacity(0.05),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                ),
-            ],
+                ],
+              ),
+            ),
           ),
         );
       },

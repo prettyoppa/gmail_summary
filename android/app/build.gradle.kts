@@ -16,7 +16,7 @@ if (keystorePropertiesFile.exists()) {
 }
 
 android {
-    namespace = "com.ireadschool.ischool.qas"
+    namespace = "com.ireadschool.ischool"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -41,10 +41,10 @@ android {
 
     defaultConfig {
         // 🎯 [수정] Flavor 분기문을 제거하고 dev 설정으로 고정합니다.
-        applicationId = "com.ireadschool.ischool.qas"
+        applicationId = "com.ireadschool.ischool"
         // resValue("string", "app_name", "Catchy-dev")
-         resValue("string", "app_name", "Catchy-qas")
-        // resValue("string", "app_name", "Catchy")
+        // resValue("string", "app_name", "Catchy-qas")
+         resValue("string", "app_name", "Catchy")
          
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion

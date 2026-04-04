@@ -311,10 +311,10 @@ class _FilterDrawerState extends State<FilterDrawer> {
         ),
         // --- 3. 하단 저장 버튼 고정 ---
         bottomNavigationBar: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 60),
           child: SizedBox(
             width: double.infinity,
-            height: 52,
+            height: 50,
             child: ElevatedButton(
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.blue,

@@ -717,12 +717,12 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     List<Future<List<IntegratedMail>>> tasks = [];
     List<String> activeServices = [];
 
-    // 1. Gmail은 항상 시도 (또는 토큰 체크 로직 추가 가능)
+    // 1. Gmail 수집 등록
     tasks.add(
       _gmailService.fetchEmails(
         query: _buildGmailQuery(
           startDate: startDateGmail,
-          endDate: endDateGmail ?? now, // 💡 종료일 적용
+          endDate: endDateGmail ?? now,
         ),
       ),
     );
@@ -735,55 +735,74 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         _fetchServiceEmails('naver', _naverService, startDateNaver, now),
       );
       activeServices.add('naver');
-    } else {
-      debugPrint("⚠️ 네이버 계정 정보가 로컬에 없어 수집을 건너뜁니다.");
     }
 
-    // 🚀 [수정] 다음: Storage에 아이디가 있는지 직접 확인
     final daumId = await _storage.read(key: 'daum_id');
     if (daumId != null && daumId.isNotEmpty) {
       debugPrint("📡 다음 계정 감지됨. 수집 리스트에 추가합니다.");
       tasks.add(_fetchServiceEmails('daum', _daumService, startDateDaum, now));
       activeServices.add('daum');
-    } else {
-      debugPrint("⚠️ 다음 계정 정보가 로컬에 없어 수집을 건너뜁니다.");
     }
 
     if (tasks.isEmpty) return;
     int completedTasks = 0;
+
+    // 2. 서비스별 실행 결과 수집 (실패 시 null을 반환하여 구분)
     final results = await Future.wait(
-      tasks.map((task) async {
+      tasks.asMap().entries.map((entry) async {
         try {
-          final res = await task;
+          final res = await entry.value;
           if (updateProgress && !isBackground && mounted) {
             completedTasks++;
             setState(() {
-              // 등록된 전체 태스크 수 기준으로 퍼센트 계산
               _loadingProgress = 0.1 + (completedTasks / tasks.length * 0.9);
             });
           }
-          return res;
+          return res; // 성공 시 리스트 반환
         } catch (e) {
-          debugPrint("🚨 개별 서비스 수집 실패: $e");
-          return <IntegratedMail>[]; // 에러 발생 시 빈 리스트 반환하여 전체가 멈추지 않게 함
+          debugPrint("🚨 ${activeServices[entry.key]} 수집 실패: $e");
+          return null; // 💡 실패 시 null 반환 (빈 리스트와 구분)
         }
       }),
     );
 
-    // 결과 통합
-    List<IntegratedMail> allServerMails = results.expand((x) => x).toList();
+    // 3. 결과 처리 및 개별 동기화 시간 갱신
+    List<IntegratedMail> allServerMails = [];
 
+    for (int i = 0; i < results.length; i++) {
+      final serviceName = activeServices[i];
+      final serviceMails = results[i];
+
+      // ✅ 해당 서비스가 'null'이 아니라는 것은 수집 프로세스가 성공했다는 뜻입니다.
+      if (serviceMails != null) {
+        if (serviceMails.isNotEmpty) {
+          allServerMails.addAll(serviceMails);
+
+          // 💡 최신 메일 날짜 추출 (성능 저하 없음)
+          DateTime maxDate = serviceMails
+              .map((m) => m.dateTime)
+              .reduce((a, b) => a.isAfter(b) ? a : b);
+
+          if (isBackground || !isFirstRun) {
+            await MailCacheManager.saveLastSyncTime(serviceName, maxDate);
+            debugPrint("💾 $serviceName: 최신 메일 날짜($maxDate)로 갱신 완료");
+          }
+        } else {
+          // 메일은 없지만 에러 없이 수집을 마친 경우
+          if (isBackground || !isFirstRun) {
+            await MailCacheManager.saveLastSyncTime(serviceName, now);
+            debugPrint("💾 $serviceName: 새 메일 없음. $now로 갱신");
+          }
+        }
+      } else {
+        // 💡 수집 실패(null)인 경우, 시간 갱신을 건너뛰어 다음 실행 시 누락 없이 재수집합니다.
+        debugPrint("⚠️ $serviceName 수집 실패로 인해 시간 갱신을 건너뜁니다.");
+      }
+    }
+
+    // 4. 최종 캐시 저장
     if (allServerMails.isNotEmpty) {
       await MailCacheManager.saveMails(allServerMails);
-
-      if (isBackground || !isFirstRun) {
-        for (String service in activeServices) {
-          await MailCacheManager.saveLastSyncTime(service, now);
-        }
-        debugPrint("💾 저장 및 ${activeServices.join(', ')} 동기화 시간 갱신 완료");
-      } else {
-        debugPrint("💾 1단계 우선 저장 완료 (2단계 수집을 위해 시간 갱신은 보류)");
-      }
     }
   }
 

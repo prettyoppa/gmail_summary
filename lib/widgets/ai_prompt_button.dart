@@ -170,211 +170,156 @@ class _AIPromptButtonState extends State<AIPromptButton> {
   void _showPromptSheet(BuildContext context) {
     showModalBottomSheet(
       context: context,
-      isScrollControlled: true,
+      isScrollControlled: true, // 키보드 대응 필수
       backgroundColor: Colors.transparent,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setSheetState) => Container(
-          height: MediaQuery.of(context).size.height * 0.65,
-          padding: EdgeInsets.only(
-            left: 20,
-            right: 20,
-            top: 25,
-            bottom: MediaQuery.of(context).viewInsets.bottom + 25,
-          ),
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 40,
-                height: 4,
-                margin: const EdgeInsets.only(bottom: 20),
-                decoration: BoxDecoration(
-                  color: Colors.grey[300],
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-
-              // 탭 선택 영역
-              Row(
-                children: [
-                  _tabButton("사용자 프롬프트 1", 0, setSheetState),
-                  const SizedBox(width: 10),
-                  _tabButton("사용자 프롬프트 2", 1, setSheetState),
-                ],
-              ),
-              const SizedBox(height: 20),
-
-              // 텍스트 박스 영역
-              Expanded(
-                child: Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(15),
+      builder: (context) => Padding(
+        // [중요] 키보드 높이만큼 시트 전체를 위로 밀어 올립니다.
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
+        ),
+        child: StatefulBuilder(
+          builder: (context, setSheetState) => Container(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 25),
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
+            ),
+            // Column의 mainAxisSize를 min으로 설정하여 내용물만큼만 높이를 차지하게 함
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // 상단 핸들 바
+                Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 20),
                   decoration: BoxDecoration(
-                    color: Colors.grey[50],
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: Colors.grey[200]!),
+                    color: Colors.grey[300],
+                    borderRadius: BorderRadius.circular(2),
                   ),
-                  child: _selectedPromptTab == 0
-                      ? Stack(
-                          children: [
-                            TextField(
-                              controller: _promptController, // 변수명 통일
-                              maxLines: null,
-                              keyboardType: TextInputType.multiline,
-                              style: const TextStyle(fontSize: 15, height: 1.5),
-                              decoration: const InputDecoration(
-                                hintText: "나만의 요약을 지시해보세요...",
-                                border: InputBorder.none,
-                              ),
-                            ),
-                            Positioned(
-                              right: 0,
-                              bottom: 0,
-                              child: FloatingActionButton.small(
-                                heroTag: "share_fab",
-                                onPressed: _sharePromptToGallery,
-                                backgroundColor: Colors.indigo.withOpacity(0.1),
-                                elevation: 0,
-                                child: const Icon(
-                                  Icons.cloud_upload,
-                                  color: Colors.indigo,
-                                ),
-                              ),
-                            ),
-                          ],
-                        )
-                      : Column(
-                          children: [
-                            Padding(
-                              padding: const EdgeInsets.only(bottom: 12.0),
-                              child: TextButton.icon(
-                                onPressed: () =>
-                                    _openPromptGallery(setSheetState),
-                                icon: const Icon(Icons.auto_awesome, size: 18),
-                                label: const Text("갤러리에서 새로 가져오기"),
-                                style: TextButton.styleFrom(
-                                  minimumSize: const Size(double.infinity, 45),
-                                  backgroundColor: Colors.white,
-                                  foregroundColor: Colors.indigo,
-                                  side: BorderSide(
-                                    color: Colors.indigo.withOpacity(0.2),
-                                  ),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(10),
-                                  ),
-                                ),
-                              ),
-                            ),
-                            Expanded(
-                              child: SingleChildScrollView(
-                                physics: const BouncingScrollPhysics(),
-                                child: Container(
-                                  width: double.infinity,
-                                  alignment: Alignment.topLeft,
-                                  child: Text(
-                                    _galleryPrompt.isEmpty
-                                        ? "선택된 갤러리 프롬프트가 없습니다."
-                                        : _galleryPrompt,
-                                    style: const TextStyle(
-                                      color: Colors.black87,
-                                      fontSize: 15,
-                                      height: 1.5,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
                 ),
-              ),
-              const SizedBox(height: 20),
-
-              // 저장 버튼
-              Padding(
-                padding: const EdgeInsets.only(top: 8.0), // 상단 여백 약간 추가
-                child: Row(
+                // 탭 버튼
+                Row(
                   children: [
-                    // --- 취소 버튼 ---
-                    Expanded(
-                      flex: 1,
-                      child: SizedBox(
-                        height: 60,
-                        child: OutlinedButton(
-                          style: OutlinedButton.styleFrom(
-                            side: BorderSide(
-                              color: Colors.grey[300]!,
-                            ), // 연한 테두리
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(18),
+                    _tabButton("사용자 프롬프트 1", 0, setSheetState),
+                    const SizedBox(width: 10),
+                    _tabButton("사용자 프롬프트 2", 1, setSheetState),
+                  ],
+                ),
+                const SizedBox(height: 15),
+
+                // [핵심] 텍스트 입력 영역 (최대 높이를 제한하여 버튼을 가리지 않게 함)
+                Flexible(
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.grey[50],
+                      borderRadius: BorderRadius.circular(15),
+                      border: Border.all(color: Colors.grey[200]!),
+                    ),
+                    child: _selectedPromptTab == 0
+                        ? TextField(
+                            controller: _promptController,
+                            maxLines: 6, // 기본 노출 줄 수 조절
+                            minLines: 1,
+                            keyboardType: TextInputType.multiline,
+                            decoration: const InputDecoration(
+                              hintText: "나만의 요약을 지시해보세요...",
+                              border: InputBorder.none,
+                              isDense: true,
+                            ),
+                          )
+                        : ConstrainedBox(
+                            constraints: BoxConstraints(
+                              maxHeight:
+                                  MediaQuery.of(context).size.height *
+                                  0.3, // 너무 길어지면 내부 스크롤
+                            ),
+                            child: SingleChildScrollView(
+                              child: Text(
+                                _galleryPrompt.isEmpty
+                                    ? "선택된 프롬프트가 없습니다."
+                                    : _galleryPrompt,
+                              ),
                             ),
                           ),
-                          onPressed: () => Navigator.pop(context),
-                          child: const Text(
-                            "취소",
-                            style: TextStyle(
-                              color: Colors.black54,
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
+                  ),
+                ),
+
+                // 갤러리 공유/가져오기 버튼 (텍스트 영역 바로 아래 배치)
+                if (_selectedPromptTab == 0)
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton.icon(
+                      onPressed: _sharePromptToGallery,
+                      icon: const Icon(Icons.cloud_upload, size: 18),
+                      label: const Text("갤러리에 공유"),
+                    ),
+                  )
+                else
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: ElevatedButton.icon(
+                      onPressed: () => _openPromptGallery(setSheetState),
+                      icon: const Icon(Icons.auto_awesome, size: 18),
+                      label: const Text("갤러리에서 가져오기"),
+                      style: ElevatedButton.styleFrom(
+                        minimumSize: const Size(double.infinity, 40),
                       ),
                     ),
-                    const SizedBox(width: 12), // 버튼 사이 간격
-                    // --- 적용 버튼 ---
-                    Expanded(
-                      flex: 2, // 적용 버튼을 조금 더 크게 강조
-                      child: SizedBox(
-                        height: 60,
+                  ),
+
+                const SizedBox(height: 10),
+
+                // 하단 버튼 (항상 최하단에 위치)
+                Padding(
+                  // 아까 확인하신 것처럼 60 정도를 주면 작은 폰에서도 안정적으로 올라옵니다.
+                  padding: const EdgeInsets.only(bottom: 40),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: () => Navigator.pop(context),
+                          child: const Text("취소"),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
                         child: ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.blueAccent, // 기존 강조 색상 유지
-                            elevation: 0,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(18),
-                            ),
-                          ),
                           onPressed: () async {
                             final user = FirebaseAuth.instance.currentUser;
+
                             if (user != null) {
-                              // Firestore 업데이트
                               await FirebaseFirestore.instance
                                   .collection('users')
                                   .doc(user.uid)
                                   .update({
                                     'customPrompt': _promptController.text,
+
                                     'galleryPrompt': _galleryPrompt,
+
                                     'selectedPromptType': _selectedPromptTab,
                                   });
-                              // 콜백 실행 (이때 main.dart의 시간 갱신 로직이 돌아갑니다)
+
                               widget.onPromptSaved(
                                 _promptController.text,
+
                                 _galleryPrompt,
+
                                 _selectedPromptTab,
                               );
                             }
+
                             if (context.mounted) Navigator.pop(context);
                           },
-                          child: const Text(
-                            "적용",
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
+                          child: const Text("적용"),
                         ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
