@@ -7,7 +7,8 @@ if (!admin.apps.length) {
   admin.initializeApp();
 }
 
-const geminiApiKey = defineSecret("GEMINI_API_KEY");
+// Secret Manager 이름 (Catchy용 Gemini 키, 프로젝트 ireadschool-800f8)
+const geminiApiKey = defineSecret("catchy-app");
 
 // 한국 시간 기준 날짜 생성을 위한 헬퍼 함수
 const getKSTInfo = () => {
@@ -59,8 +60,25 @@ exports.getSummary = onRequest({
       console.error("Remote Config 로드 실패:", configError);
     }
 
-    // --- 2. AI 설정 ---
-    const genAI = new GoogleGenerativeAI(geminiApiKey.value());
+    // --- 2. AI 설정 (Secret 값 앞뒤 공백/줄바꿈 제거 — 무효 키 오류 방지)
+    const apiKey = String(geminiApiKey.value() ?? "").trim();
+    console.log(
+      ">>>>>>> [GEMINI KEY DIAG] len=",
+      apiKey.length,
+      "startsWithAIza=",
+      apiKey.startsWith("AIza")
+    );
+    if (!apiKey) {
+      console.error(">>>>>>> [GEMINI KEY DIAG] empty after trim");
+      return res.status(200).json({
+        status: "error",
+        summary: "서버 오류가 발생했습니다.",
+        guide: "API 키가 비어 있습니다. Secret Manager의 catchy-app 값을 확인해 주세요.",
+        event_info: null,
+        clean_body: "empty_api_key",
+      });
+    }
+    const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
       model: userModel,
       generationConfig: {

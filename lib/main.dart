@@ -48,6 +48,20 @@ const String appFlavor = String.fromEnvironment(
   defaultValue: 'qas',
 );
 
+/// 이메일 AI 요약 디버그. Chrome 개발자 도구 콘솔·`flutter run` 로그에서 **`CatchySummary`** 로 검색.
+void logCatchySummary(String phase, String detail, {Object? error}) {
+  final iso = DateTime.now().toUtc().toIso8601String();
+  final platform = kIsWeb ? 'web' : 'native';
+  final err = error != null ? '|err=$error' : '';
+  print('CatchySummary|$iso|$platform|$phase|$detail$err');
+}
+
+String _catchySummaryTruncate(String? text, int maxChars) {
+  if (text == null || text.isEmpty) return '(empty)';
+  if (text.length <= maxChars) return text;
+  return '${text.substring(0, maxChars)}...(totalLen=${text.length})';
+}
+
 void main() async {
   try {
     WidgetsFlutterBinding.ensureInitialized();
@@ -174,8 +188,13 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   Set<String> _selectedMailIds = {}; // 선택된 메일의 ID들 (중복 방지를 위해 Set 사용)
   final FocusNode _searchFocusNode = FocusNode(); // 검색창 포커스 감지
   bool _isSearchFocused = false; // 현재 검색창이 활성화되었는지 여부
+  /// true이면 읽은 메일(`_readIds`)은 목록에서 제외하고 안읽은 메일만 표시
+  bool _filterUnreadOnly = false;
   Timer? _syncTimer;
   bool _isSyncing = false; // 현재 동기화 중인지 체크하는 플래그
+
+  /// [ _loadInitialData ] 동시 호출을 한 줄로 묶어 서로 상태를 덮어쓰지 않게 합니다.
+  Future<void>? _profileLoadInFlight;
 
   // 초기값은 모든 메일사가 선택된 상태 (Set을 활용해 멀티 선택 구현)
   Set<MailSource> _selectedSources = {
@@ -258,8 +277,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         setState(() {
           _isAdmin = isMatched;
         });
-        // 로그인이 확인되면 다시 한번 데이터를 갱신할 수 있도록 구성
-        _loadInitialData();
+        // FirebaseAuth 반영 전에 돌면 프로필만 비우고 끝나는 레이스 방지 + 중복 호출 합침
+        await _requestLoadInitialData();
       }
     });
 
@@ -351,6 +370,36 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         _fetchEmails(isBackground: false);
       }
     }
+  }
+
+  /// 구글 [ onCurrentUserChanged ]와 로그인 버튼이 동시에 불러와도 한 번만 실행되도록 합니다.
+  Future<void> _requestLoadInitialData() async {
+    if (_profileLoadInFlight != null) {
+      await _profileLoadInFlight;
+      return;
+    }
+    _profileLoadInFlight = _runLoadInitialDataWhenFirebaseReady();
+    try {
+      await _profileLoadInFlight;
+    } finally {
+      _profileLoadInFlight = null;
+    }
+  }
+
+  /// Google 계정은 잡혔는데 아직 [ FirebaseAuth.currentUser ]가 없을 때 잠깐 기다린 뒤 로드합니다.
+  Future<void> _runLoadInitialDataWhenFirebaseReady() async {
+    if (_googleUser == null) return;
+    for (var i = 0; i < 40; i++) {
+      if (!mounted) return;
+      if (FirebaseAuth.instance.currentUser != null) {
+        await _loadInitialData();
+        return;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    debugPrint(
+      '⚠️ FirebaseAuth.currentUser 지연: 프로필/초기데이터 로드 생략 (최대 2초 대기)',
+    );
   }
 
   Future<void> _loadInitialData() async {
@@ -493,20 +542,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       tempList.sort((a, b) => b.dateTime.compareTo(a.dateTime));
       _filteredEmails = tempList; // 필터링+정렬된 원본 보관
 
-      // --- (C) 3단계: 검색어 및 소스 필터링 (최종 화면 표시용) ---
-      // ✅ 별도의 함수 호출 없이 여기서 직접 처리합니다.
-      _displayEmails = _filteredEmails.where((email) {
-        // 검색어 필터링 (_searchQuery 변수가 선언되어 있어야 함)
-        final bool matchesSearch =
-            _searchQuery.isEmpty ||
-            email.subject.toLowerCase().contains(_searchQuery.toLowerCase()) ||
-            email.sender.toLowerCase().contains(_searchQuery.toLowerCase());
-
-        // 소스 필터링 (_selectedSources 변수가 선언되어 있어야 함)
-        final bool matchesSource = _selectedSources.contains(email.source);
-
-        return matchesSearch && matchesSource;
-      }).toList();
+      // --- (C) 3단계: 검색·소스·안읽음 등은 _applyAdvancedFilter()와 동일 로직 ---
+      _displayEmails = _applyAdvancedFilter();
     });
 
     debugPrint(
@@ -872,7 +909,11 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       // 소스(Gmail, Naver, Daum) 필터링
       final bool matchesSource = _selectedSources.contains(email.source);
 
-      return matchesSearch && matchesSource;
+      // 안읽음 전용: 읽은 메일 제외
+      final bool matchesUnread =
+          !_filterUnreadOnly || !_readIds.contains(email.id);
+
+      return matchesSearch && matchesSource && matchesUnread;
     }).toList();
   }
 
@@ -1054,12 +1095,15 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   }) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
-      print('DEBUG: [로그인 에러] 사용자가 로그인되어 있지 않음');
+      logCatchySummary('auth', 'no_firebase_user abort');
       return;
     }
 
     final mailId = email['id'];
-    print('DEBUG: [분석 시작] mailId: $mailId, forceRefresh: $forceRefresh');
+    logCatchySummary(
+      'start',
+      'mailId=$mailId forceRefresh=$forceRefresh subject=${_catchySummaryTruncate(email['subject']?.toString(), 80)}',
+    );
     final docRef = FirebaseFirestore.instance
         .collection('users')
         .doc(user.uid)
@@ -1087,18 +1131,18 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             updatedTime.isBefore(_lastPromptUpdateTime);
 
         if (!isOutdated) {
-          print('DEBUG: [최신 캐시 발견] 기존 데이터를 불러옵니다.');
+          logCatchySummary('cache_hit', 'mailId=$mailId using Firestore summary');
           setState(() {
             _summarizedContent[mailId] = data['result'];
             _extractedEventData[mailId] = data['eventData'];
           });
           return;
         }
-        print('DEBUG: [캐시 만료] 프롬프트가 변경되어 재분석을 진행합니다.');
+        logCatchySummary('cache_stale', 'mailId=$mailId prompt changed, refetch');
       }
     }
 
-    print('DEBUG: [서버 요청] 캐시가 없거나 만료되었습니다. 서버로 요청을 보냅니다.');
+    logCatchySummary('server_call', 'mailId=$mailId posting to summary API');
     setState(() {
       _summarizedContent.remove(mailId);
     });
@@ -1113,31 +1157,47 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         : activePrompt;
 
     try {
-      print('DEBUG: [HTTP POST] URL: ${AppConstants.summaryServerUrl}');
-      final response = await http
-          .post(
-            Uri.parse(AppConstants.summaryServerUrl),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'mailId': mailId,
-              'emailContent':
-                  """
+      final requestBody = jsonEncode({
+        'mailId': mailId,
+        'emailContent':
+            """
 Message-ID: ${email['messageId'] ?? ''} 
 Subject: ${email['subject']}
 From: ${email['from']}
 Body: ${email['body']}
 """,
-              'promptInstruction': finalInstruction,
-            }),
+        'promptInstruction': finalInstruction,
+      });
+      logCatchySummary(
+        'http_request',
+        'url=${AppConstants.summaryServerUrl} jsonChars=${requestBody.length} promptChars=${finalInstruction.length}',
+      );
+
+      final response = await http
+          .post(
+            Uri.parse(AppConstants.summaryServerUrl),
+            headers: {'Content-Type': 'application/json'},
+            body: requestBody,
           )
           .timeout(const Duration(seconds: 20));
 
-      print('DEBUG: [서버 응답 받음] StatusCode: ${response.statusCode}');
+      logCatchySummary(
+        'http_response',
+        'mailId=$mailId status=${response.statusCode} bodyChars=${response.body.length} body=${_catchySummaryTruncate(response.body, 1200)}',
+      );
       if (response.statusCode == 200) {
         try {
           final Map<String, dynamic> parsedJson = jsonDecode(response.body);
           if (parsedJson['status'] == 'error') {
-            _setErrorState(mailId);
+            logCatchySummary(
+              'api_error_payload',
+              'mailId=$mailId clean_body=${_catchySummaryTruncate(parsedJson['clean_body']?.toString(), 800)} guide=${_catchySummaryTruncate(parsedJson['guide']?.toString(), 400)}',
+            );
+            _setErrorState(
+              mailId,
+              reason:
+                  'server returned status=error: ${_catchySummaryTruncate(parsedJson['clean_body']?.toString(), 500)}',
+            );
             return;
           }
 
@@ -1171,21 +1231,39 @@ Body: ${email['body']}
             'updatedAt': FieldValue.serverTimestamp(), // 서버 시간 기록
           }, SetOptions(merge: true));
 
-          print('DEBUG: [성공] 분석 완료 및 Firestore 저장 성공');
+          logCatchySummary(
+            'success',
+            'mailId=$mailId summaryChars=${(parsedJson['summary']?.toString() ?? '').length} firestore_saved',
+          );
         } catch (e) {
-          debugPrint("❌ JSON 파싱 에러: $e");
-          _setErrorState(mailId);
+          logCatchySummary('json_parse_fail', 'mailId=$mailId', error: e);
+          _setErrorState(mailId, reason: 'json_decode_or_parse: $e');
         }
       } else {
-        _setErrorState(mailId);
+        _setErrorState(
+          mailId,
+          reason:
+              'http_status_${response.statusCode}: ${_catchySummaryTruncate(response.body, 600)}',
+        );
       }
-    } catch (e) {
-      debugPrint("에러 발생: $e");
-      _setErrorState(mailId);
+    } catch (e, st) {
+      final isTimeout = e is TimeoutException;
+      logCatchySummary(
+        isTimeout ? 'timeout' : 'exception',
+        'mailId=$mailId type=${e.runtimeType}',
+        error: e,
+      );
+      print('CatchySummary|stack|${_catchySummaryTruncate(st.toString(), 1500)}');
+      _setErrorState(
+        mailId,
+        reason:
+            '${isTimeout ? 'timeout_20s' : e.runtimeType.toString()}: $e',
+      );
     }
   }
 
-  void _setErrorState(String mailId) {
+  void _setErrorState(String mailId, {required String reason}) {
+    logCatchySummary('ui_error_state', 'mailId=$mailId reason=$reason');
     setState(() {
       _summarizedContent[mailId] = {
         "status": "error",
@@ -1444,7 +1522,7 @@ Body: ${email['body']}
                 });
 
                 // 3. 데이터 로드 및 이메일 가져오기
-                await _loadInitialData();
+                await _requestLoadInitialData();
                 _fetchEmails();
               }
             },
@@ -1691,20 +1769,21 @@ Body: ${email['body']}
           builder: (context, constraints) {
             Widget filterChipsSection = AnimatedContainer(
               duration: const Duration(milliseconds: 300),
-              height: _isSearchFocused ? 50 : 0, // 포커스 시 50px, 아닐 때 0px
+              height: _isSearchFocused ? 40 : 0, // 컴팩트한 칩 높이
               curve: Curves.easeInOut,
               child: _isSearchFocused
                   ? SingleChildScrollView(
                       scrollDirection: Axis.horizontal,
                       padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 4,
+                        horizontal: 8,
+                        vertical: 2,
                       ),
                       child: Row(
                         children: [
                           _buildFilterChip("Google", MailSource.gmail),
                           _buildFilterChip("Naver", MailSource.naver),
                           _buildFilterChip("Daum", MailSource.daum),
+                          _buildUnreadFilterChip(),
                         ],
                       ),
                     )
@@ -1901,12 +1980,21 @@ Body: ${email['body']}
     );
   }
 
+  static const EdgeInsets _filterChipLabelPadding = EdgeInsets.symmetric(
+    horizontal: 6,
+    vertical: 0,
+  );
+
   Widget _buildFilterChip(String label, MailSource source) {
     final bool isSelected = _selectedSources.contains(source);
     return Padding(
-      padding: const EdgeInsets.only(right: 8),
+      padding: const EdgeInsets.only(right: 4),
       child: FilterChip(
-        label: Text(label, style: const TextStyle(fontSize: 12)),
+        visualDensity: VisualDensity.compact,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        labelPadding: _filterChipLabelPadding,
+        padding: EdgeInsets.zero,
+        label: Text(label, style: const TextStyle(fontSize: 11)),
         selected: isSelected,
         onSelected: (bool selected) {
           setState(() {
@@ -1924,7 +2012,31 @@ Body: ${email['body']}
         backgroundColor: Colors.grey[100],
         selectedColor: Colors.blueAccent.withOpacity(0.2),
         checkmarkColor: Colors.blueAccent,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      ),
+    );
+  }
+
+  Widget _buildUnreadFilterChip() {
+    return Padding(
+      padding: const EdgeInsets.only(right: 4),
+      child: FilterChip(
+        visualDensity: VisualDensity.compact,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        labelPadding: _filterChipLabelPadding,
+        padding: EdgeInsets.zero,
+        label: const Text("안읽음", style: TextStyle(fontSize: 11)),
+        selected: _filterUnreadOnly,
+        onSelected: (bool selected) {
+          setState(() {
+            _filterUnreadOnly = selected;
+            _displayEmails = _applyAdvancedFilter();
+          });
+        },
+        backgroundColor: Colors.grey[100],
+        selectedColor: Colors.blueAccent.withOpacity(0.2),
+        checkmarkColor: Colors.blueAccent,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       ),
     );
   }

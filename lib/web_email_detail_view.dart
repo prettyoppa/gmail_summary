@@ -208,7 +208,7 @@ class WebEmailDetailView extends StatelessWidget {
       builder: (context) => AlertDialog(
         title: const Text("메일 삭제"),
         content: const Text(
-          "이 메일을 Catchy-dev 앱에서 삭제하시겠습니까?\n(메일 서버에서는 삭제되지 않습니다.)",
+          "이 메일을 Catchy 앱에서 삭제하시겠습니까?\n(메일 서버에서는 삭제되지 않습니다.)",
         ),
         actions: [
           TextButton(

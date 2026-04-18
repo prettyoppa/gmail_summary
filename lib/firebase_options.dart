@@ -22,7 +22,7 @@ class DefaultFirebaseOptions {
     }
   }
 
-  // main 프로젝트 firebase 설정 ;
+  // main 프로젝트 (ireadschool-800f8) — android 는 google-services.json 과 맞춤
   static const FirebaseOptions web = FirebaseOptions(
     apiKey: 'AIzaSyBXmLxnMc6FS6EDfTT-rWGB67M3tT9yV2E',
     appId: '1:474725837334:web:881b94bd37c2113299e337',
@@ -34,48 +34,10 @@ class DefaultFirebaseOptions {
   );
 
   static const FirebaseOptions android = FirebaseOptions(
-    apiKey: 'AIzaSyBXmLxnMc6FS6EDfTT-rWGB67M3tT9yV2E',
-    appId: '1:474725837334:android:d200b11aa1227a0399e337',
+    apiKey: 'AIzaSyDanU6GvNiPXbVPoQfSAM0jZ0N1IfRw1fo',
+    appId: '1:474725837334:android:5b787d58acb4584d99e337',
     messagingSenderId: '474725837334',
     projectId: 'ireadschool-800f8',
     storageBucket: 'ireadschool-800f8.firebasestorage.app',
   );
-
-  // qas 프로젝트 firebase 설정 ;
-  // static const FirebaseOptions web = FirebaseOptions(
-  //   apiKey: 'AIzaSyCI8Vytv5Nd4XSEVn1yJn1kxpFp4VQDlhM',
-  //   appId: '1:512126694471:web:38b8de30fff03dc5c22d62',
-  //   messagingSenderId: '512126694471',
-  //   projectId: 'ireadschool-qas',
-  //   authDomain: 'ireadschool-qas.firebaseapp.com',
-  //   storageBucket: 'ireadschool-qas.firebasestorage.app',
-  //   measurementId: 'G-12QJTQW6X9',
-  // );
-
-  // static const FirebaseOptions android = FirebaseOptions(
-  //   apiKey: 'AIzaSyCI8Vytv5Nd4XSEVn1yJn1kxpFp4VQDlhM',
-  //   appId: '1:512126694471:web:38b8de30fff03dc5c22d62',
-  //   messagingSenderId: '512126694471',
-  //   projectId: 'ireadschool-qas',
-  //   storageBucket: 'ireadschool-qas.firebasestorage.app',
-  // );
-
-  // dev 프로젝트 firebase 설정 ;
-  //   static const FirebaseOptions web = FirebaseOptions(
-  //     apiKey: 'AIzaSyDFKJ_TU786HeBV1ZzmoG6GGKD3FW2c0B8',
-  //     appId: '1:877541084240:web:5966a6754fa5f376d59555',
-  //     messagingSenderId: '877541084240',
-  //     projectId: 'ireadschool-dev',
-  //     authDomain: 'ireadschool-dev.firebaseapp.com',
-  //     storageBucket: 'ireadschool-dev.firebasestorage.app',
-  //     measurementId: 'G-TJBNMD02FH',
-  //   );
-
-  //   static const FirebaseOptions android = FirebaseOptions(
-  //     apiKey: 'AIzaSyDFKJ_TU786HeBV1ZzmoG6GGKD3FW2c0B8',
-  //     appId: '1:877541084240:web:5966a6754fa5f376d59555',
-  //     messagingSenderId: '877541084240',
-  //     projectId: 'ireadschool-dev',
-  //     storageBucket: 'ireadschool-dev.firebasestorage.app',
-  //   );
 }

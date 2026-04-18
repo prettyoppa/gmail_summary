@@ -1,0 +1,48 @@
+================================================================================
+  Cursor / AI 작업 기록 (로컬 메모)
+  이 파일은 빌드·실행에 사용되지 않습니다. 필요 없으면 삭제해도 됩니다.
+================================================================================
+
+[작성 시점 참고] 대화에서 정리한 내용이며, 실제 적용 여부는 git diff 로 확인하세요.
+
+
+--------------------------------------------------------------------------------
+1) dev 브랜치에서 다룬 기능·수정 (요약)
+--------------------------------------------------------------------------------
+- 이메일 상세: 수신 일시 표시 (email_received_at_format.dart, 상세 화면들)
+- 프로필 드로어: Firebase 이메일 없을 때 Google 계정 이메일 폴백
+- main.dart: _requestLoadInitialData / Firebase 준비 대기로 초기 로그인 레이스 완화
+- 메일 목록: "안읽음" 필터 칩 (_filterUnreadOnly + _readIds)
+- 필터 칩 UI: 컴팩트(여백·폰트·VisualDensity 등)
+- Android dev 빌드: applicationId com.ireadschool.ischool.dev, 표시명 Catchy-dev,
+  MainActivity 패키지 com.ireadschool.ischool.dev 등 (main 복귀 시 아래 2절에서 되돌림)
+
+
+--------------------------------------------------------------------------------
+2) main 브랜치 복귀·출시 준비 (적용됨 — 2026 기준 세션)
+--------------------------------------------------------------------------------
+[x] git: main 체크아웃 + dev merge + stash 복원 작업 흐름 처리
+
+[x] 패키지: com.ireadschool.ischool (build.gradle.kts, linux/CMakeLists.txt)
+[x] google-services.json: origin/main 버전으로 복구 (package com.ireadschool.ischool)
+    → 콘솔에서 최신본을 다시 받아 덮어써도 됨
+
+[x] MainActivity: com/ireadschool/ischool/MainActivity.kt, package com.ireadschool.ischool
+    (ischool/dev/ 폴더 제거)
+
+[x] Catchy 문구: main.dart, web, landing, manual, email 상세 등
+
+[x] lib/firebase_options.dart, lib/constants.dart — main(ireadschool-800f8) + 웹 클라이언트 ID
+
+
+--------------------------------------------------------------------------------
+3) 참고 명령
+--------------------------------------------------------------------------------
+  git checkout main
+  git diff main..dev          # 브랜치 차이
+  flutter analyze
+
+
+================================================================================
+끝
+================================================================================

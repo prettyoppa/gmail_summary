@@ -152,6 +152,7 @@ class _ProfileDrawerState extends State<ProfileDrawer> {
                             const SizedBox(height: 4),
                             Text(
                               FirebaseAuth.instance.currentUser?.email ??
+                                  widget.googleSignIn.currentUser?.email ??
                                   "계정 정보 없음",
                               style: const TextStyle(
                                 fontSize: 15,

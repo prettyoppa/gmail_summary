@@ -196,7 +196,7 @@ $textToShare
                     if (receivedAt.isNotEmpty) ...[
                       const SizedBox(height: 4),
                       Text(
-                        "수신: $receivedAt",
+                        receivedAt,
                         style: TextStyle(color: Colors.grey[600], fontSize: 14),
                       ),
                     ],

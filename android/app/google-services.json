@@ -14,6 +14,14 @@
       },
       "oauth_client": [
         {
+          "client_id": "474725837334-56oj1iboa83f86k2nqqk7qptu3hb33i8.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.ireadschool.ischool",
+            "certificate_hash": "f4628fe3a6f2ca7dc57a5a8be3de073f44208e9e"
+          }
+        },
+        {
           "client_id": "474725837334-8k7dd3pad4qhkb7c60u559h12l3b2fu6.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
